@@ -1,0 +1,68 @@
+name: mineru-split
+
+services:
+  mineru-model:
+    build:
+      context: ..
+      dockerfile: docker/global/model.Dockerfile
+    image: mineru-model:4-split
+    container_name: mineru-model
+    restart: unless-stopped
+    ports:
+      - "30000:30000"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:30000/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MINERU_GPU_ID:-0}"]
+              capabilities: [gpu]
+
+  mineru-api:
+    build:
+      context: ..
+      dockerfile: docker/global/service.Dockerfile
+    image: mineru-api:4-split
+    container_name: mineru-api
+    restart: unless-stopped
+    depends_on:
+      mineru-model:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Small Hybrid models stay local on the parser node.
+      MINERU_MODEL_SOURCE: local
+      MINERU_MODEL_SMALL_BACKEND: onnx
+
+      # VLM inference is delegated to the OpenAI-compatible model node.
+      MINERU_MODEL_VLM_SERVER_URL: http://mineru-model:30000/v1
+      MINERU_MODEL_VLM_MODEL: "${MINERU_VLM_MODEL:-}"
+      MINERU_MODEL_VLM_API_KEY: "${MINERU_VLM_API_KEY:-}"
+      MINERU_MODEL_VLM_HTTP_TIMEOUT: "${MINERU_VLM_HTTP_TIMEOUT:-600}"
+      MINERU_MODEL_VLM_MAX_CONCURRENCY: "${MINERU_VLM_MAX_CONCURRENCY:-100}"
+    command:
+      - api-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tier
+      - standard
+      - --preload-models
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/v1/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
