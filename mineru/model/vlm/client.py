@@ -24,6 +24,9 @@ def get_vlm_predictor(vlm_config: VlmConfig | None = None) -> tuple[MinerUClient
             model_path=None,
             server_url=settings.server_url,
             model_name=settings.model or None,
+            # 显式配置模型名时直接使用该名称。部分 OpenAI-compatible
+            # 服务只实现 /v1/chat/completions，并不提供 /v1/models。
+            skip_model_name_checking=bool(settings.model),
             server_headers={"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {},
             http_timeout=settings.http_timeout,
             max_concurrency=settings.max_concurrency,
