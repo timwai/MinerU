@@ -32,6 +32,7 @@ class _OpenAIServer:
     models: list[str] = field(default_factory=lambda: ["test-model"])
     api_key: str = "test-key"
     chat_status: int = 200
+    models_status: int = 200
     requests: list[tuple[str, str, dict[str, Any] | None]] = field(default_factory=list)
 
 
@@ -77,6 +78,9 @@ def openai_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_OpenAIServer]:
                 return
             if self.path != "/proxy/v1/models":
                 self._respond(404, {"error": {"message": "unknown path"}})
+                return
+            if state.models_status != 200:
+                self._respond(state.models_status, {"error": {"message": "models endpoint unavailable"}})
                 return
             self._respond(200, {"data": [{"id": model} for model in state.models]})
 
@@ -156,10 +160,14 @@ def test_remote_models_and_auth_failures(openai_server: _OpenAIServer) -> None:
     openai_server.models = ["first", "second"]
     with pytest.raises(Exception, match="exactly one model"):
         get_vlm_predictor(_settings(openai_server))
-    with pytest.raises(Exception, match="not found"):
-        get_vlm_predictor(_settings(openai_server, model="missing"))
-    predictor, _ = get_vlm_predictor(_settings(openai_server, model="second"))
-    assert predictor._predictor.client.model_name == "second"
+    # 显式模型名不再依赖 /v1/models；兼容只实现 Chat Completions 的上游。
+    openai_server.models_status = 404
+    openai_server.requests.clear()
+    predictor, _ = get_vlm_predictor(_settings(openai_server, model="explicit-model"))
+    assert predictor._predictor.client.model_name == "explicit-model"
+    assert openai_server.requests == []
+    assert predictor._call(lambda: predictor._predictor.client.aio_predict(None, "test")) == "Remote VLM text"
+    assert {request[0] for request in openai_server.requests} == {"/proxy/v1/chat/completions"}
 
 
 def test_remote_optional_auth_and_concurrent_credentials(openai_server: _OpenAIServer) -> None:
