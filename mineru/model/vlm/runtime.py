@@ -140,6 +140,7 @@ class ModelSingleton:
         server_headers = kwargs.get("server_headers", None)  # for http-client backend only
         max_retries = kwargs.get("max_retries", 3)  # for http-client backend only
         retry_backoff_factor = kwargs.get("retry_backoff_factor", 0.5)  # for http-client backend only
+        skip_model_name_checking = kwargs.get("skip_model_name_checking", False)  # for http-client backend only
         # 从kwargs中移除这些参数，避免传递给不相关的初始化函数
         for param in [
             "batch_size",
@@ -148,6 +149,7 @@ class ModelSingleton:
             "server_headers",
             "max_retries",
             "retry_backoff_factor",
+            "skip_model_name_checking",
         ]:
             if param in kwargs:
                 del kwargs[param]
@@ -324,6 +326,7 @@ class ModelSingleton:
                 server_headers=server_headers,
                 max_retries=max_retries,
                 retry_backoff_factor=retry_backoff_factor,
+                skip_model_name_checking=skip_model_name_checking,
                 enable_table_formula_eq_wrap=True,
                 image_analysis=True,
                 enable_cross_page_table_merge=False,
