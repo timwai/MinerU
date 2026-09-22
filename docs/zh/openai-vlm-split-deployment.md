@@ -122,6 +122,14 @@ export MINERU_MODEL_VLM_MAX_CONCURRENCY=100
 
 当 `MINERU_MODEL_VLM_MODEL` 为空时，MinerU 会调用 `/v1/models` 自动发现模型；自动发现要求上游只返回一个可用模型。如果上游返回多个模型，请显式设置模型名。
 
+如果上游没有实现 `/v1/models`，必须显式设置 `MINERU_MODEL_VLM_MODEL`。显式模型名存在时 MinerU 会直接调用 `/v1/chat/completions`，不会请求或校验 `/v1/models`：
+
+```bash
+export MINERU_MODEL_VLM_SERVER_URL=https://example.com/v1
+export MINERU_MODEL_VLM_MODEL=MinerU2.5-Pro-2605-1.2B
+export MINERU_MODEL_VLM_API_KEY=your-api-key
+```
+
 设置 `MINERU_MODEL_VLM_API_KEY` 后，解析服务会使用标准 Bearer 认证：
 
 ```http
