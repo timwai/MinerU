@@ -972,11 +972,11 @@ def test_normalize_pdf_model_list_rejects_unclassified_vlm_title() -> None:
         ],
     ],
 )
-def test_normalize_pdf_model_list_removes_six_text_types_with_invalid_lines(
+def test_normalize_pdf_model_list_removes_six_text_types_without_usable_geometry(
     block_type: str,
     invalid_lines: object,
 ) -> None:
-    """验证包括 ref_text 在内的六类文本块遇到非法行框时按 fail-closed 规则删除。"""
+    """验证包括 ref_text 在内的六类文本块既无合法行框、也无块框时仍然删除。"""
 
     model_list = [[{"type": block_type, "content": "valid", "lines": invalid_lines}]]
 
@@ -1097,6 +1097,7 @@ def test_doc_analyze_effort_annotation_exposes_only_supported_values() -> None:
         "tsv",
         "epub",
         "html",
+        "mhtml",
         "ofd",
         "odt",
         "ods",
@@ -1746,6 +1747,21 @@ def test_doc_analyze_flash_returns_complete_model_json_and_typed_middle_json(mon
         events.append("attach_visual")
         original_attach_visual_block_images(*args, **kwargs)  # type: ignore[arg-type]
 
+    def fake_render_crops(
+        pdf_bytes, prepared_pages, start_page_id, end_page_id, timeout=None, threads=None, *, session=None
+    ):
+        """在当前裁图进程边界提供固定页图，保留真实编码、窗口顺序与释放断言。"""
+        page_images = fake_load_images_for_window(
+            pdf_bytes, start_page_id=start_page_id, end_page_id=end_page_id,
+            image_type="pil_img", timeout=timeout, threads=threads,
+        )
+        try:
+            tracked_attach_visual_block_images(prepared_pages, page_images, start_page_id)
+            return [[(index, block.get("image_base64")) for index, block in page] for page in prepared_pages]
+        finally:
+            for item in page_images:
+                item["img_pil"].close()
+
     original_normalize_model_list = normalization._normalize_pdf_model_list
 
     def tracked_normalize_model_list(model_list: list[list[dict[str, object]]]) -> None:
@@ -1764,6 +1780,7 @@ def test_doc_analyze_flash_returns_complete_model_json_and_typed_middle_json(mon
     monkeypatch.setattr(pipeline, "PDFDocument", lambda _: fake_pdf_doc)
     monkeypatch.setattr(window, "_configured_window_size", lambda default: 2)
     monkeypatch.setattr("docvortex.document.pdf.images.load_images_from_pdf_bytes_range", fake_load_images_for_window)
+    monkeypatch.setattr("docvortex.document.pdf.images._load_visual_crops_from_pdf_bytes_range", fake_render_crops)
     monkeypatch.setattr(visuals, "_attach_prepared_visual_block_images", tracked_attach_visual_block_images)
     monkeypatch.setattr(pipeline, "_normalize_pdf_model_list", tracked_normalize_model_list)
     monkeypatch.setattr(pipeline.time, "perf_counter", fake_perf_counter)

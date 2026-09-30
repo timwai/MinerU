@@ -254,7 +254,7 @@ OCR 策略和图片分析能力由 `tier` 与服务端实际引擎自动决定�
 | `page_range` | string | 服务端规范化后的实际解析页码范围。请求未指定时为 `1-{total}`；请求指定时，服务端先按文件总页数展开倒数页码 `rN`，再去重并合并连续页码区间。例如 `1,2,3,r1,r1` 在 10 页文件中规范化为 `1-3,10`。 |
 | `status` | string | 文件级状态。 |
 | `parse.model_used` | string | 实际模型 ID。仅当该文件 `status="completed"` 时出现。 |
-| `parse.duration_ms` | integer | 单文件从开始解析到结束的耗时，不包含排队时间。仅当该文件 `status="completed"` 时出现。 |
+| `parse.duration_ms` | integer | 单文件从开始处理到输出生成完毕的毫秒耗时，包含解析和结果导出/打包，不包含排队、客户端下载或 WebUI 渲染时间。仅当该文件 `status="completed"` 时出现。 |
 | `parse.parser_version` | string | 解析器版本。仅当该文件 `status="completed"` 时出现。 |
 | `output_files` | object | 各输出格式对应的 File 引用。仅当该文件 `status="completed"` 时出现。 |
 | `error` | object | 文件失败时出现，包含 `code` 和 `message`。仅当该文件 `status="failed"` 时出现。 |
@@ -361,4 +361,4 @@ Local Parse Server 的任务 API 与官方 API 保持同一结构，但有以下
 - `health.features.sources` 必须反映本地 server 实际允许的 source 类型；只有启动时开启 `--allow-local-source` 才包含 `local`。
 - `local` source 可以不生成输入 `file_id`；响应中应保留 `name` 和文件级状态。
 - 对 PDF/image，省略 `tier` 或传 `null` 时，只能按默认选择策略选择本地可发现的非 `flash` 质量 tier，不能回退到 `flash`；如果只有 `flash` 可用，应返回 `quality_tier_unavailable`。
-- 对 OFD/EPUB/Office/HTML/CSV/TSV，API Server job 按批量规则处理，即使 job tier 是质量 tier，文件实际解析也按 `flash` 语义归一；其它 text 不进入 parse job；暂不新增 file-level effective tier 字段。
+- 对 OFD/EPUB/Office/HTML/MHTML/CSV/TSV，API Server job 按批量规则处理，即使 job tier 是质量 tier，文件实际解析也按 `flash` 语义归一；其它 text 不进入 parse job；暂不新增 file-level effective tier 字段。

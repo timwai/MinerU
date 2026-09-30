@@ -16,6 +16,55 @@ from mineru.kit.gradio.artifacts import create_run_artifacts
 from mineru.kit.gradio.client import V1ServerCapabilities
 
 
+def test_pdf_download_renders_cjk_inline_formula_without_error(tmp_path: Path) -> None:
+    """真实 PDF 下载回调读取持久化协议，长行内公式成功导出且再次点击可复用文件。"""
+    from pypdf import PdfReader
+
+    from mineru.types import MiddleJson, PageInfo
+
+    source = tmp_path / "中文公式.pdf"
+    source.write_bytes(b"test")
+    artifacts = create_run_artifacts(source, tmp_path / "output")
+    middle = MiddleJson(
+        is_full_document=False,
+        pages=[
+            PageInfo.model_validate(
+                {
+                    "page_idx": 0,
+                    "blocks": [
+                        {
+                            "type": "text",
+                            "index": 0,
+                            "bbox": [0.1, 0.1, 0.9, 0.8],
+                            "content": [
+                                {"type": "text", "content": "中文前文"},
+                                {"type": "equation_inline", "content": "+".join(["x_i"] * 80)},
+                                {"type": "text", "content": "中文后文"},
+                            ],
+                        }
+                    ],
+                }
+            )
+        ],
+        metadata={"file_suffix": "pdf", "producer": {"name": "test", "version": "1"}},
+    )
+    artifacts.middle_json_path.write_text(json.dumps(middle.to_dict(), ensure_ascii=False), encoding="utf-8")
+    handler = gradio_app._download_handler("pdf", tmp_path / "output")
+    previous = None
+    for sequence in (1, 2):
+        token = json.dumps({"run_id": artifacts.root.name, "sequence": sequence})
+        path, receipt = handler(artifacts.as_state(), token)
+        assert json.loads(receipt) == {"request": token, "error": ""}
+        assert path is not None
+        content = Path(path).read_bytes()
+        assert content.startswith(b"%PDF-")
+        text = PdfReader(path).pages[0].extract_text()
+        assert "中文前文" in text and "中文后文" in text
+        if previous is not None:
+            assert content == previous
+        previous = content
+
+
 def test_download_receipt_keeps_request_on_success_and_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """真实结果标识校验覆盖正常生成、缓存复用及渲染异常，并在错误回执中保留请求标识。"""
     source = tmp_path / "source.pdf"
@@ -46,6 +95,12 @@ def test_download_event_chain_and_pdf_transport(tmp_path: Path) -> None:
     cap = V1ServerCapabilities("http://127.0.0.1:1", ("flash",), ("zip",), ("file_id",))
     app = gradio_app.build_gradio_app(Mock(), cap, output_root=tmp_path, enable_example=False)
     conversion = next(fn for fn in app.fns.values() if fn.name == "convert_handler")
+    assert (
+        "mineru-convert-button"
+        in next(
+            block for block in app.blocks.values() if block.__class__.__name__ == "Button" and "mineru.convert" in block.value
+        ).elem_classes
+    )
     pdf = conversion.outputs[2]
     assert pdf.__class__.__name__ == "File" and pdf.visible is False
     preview = next(fn.fn for fn in app.fns.values() if fn.name == "update_file_preview")
@@ -56,11 +111,23 @@ def test_download_event_chain_and_pdf_transport(tmp_path: Path) -> None:
     assert reset()[2]["visible"] is False
     assert reset()[7] == ""
     conversion = next(fn for fn in app.fns.values() if fn.name == "convert_handler")
-    dependency = next(dep for dep in app.config["dependencies"] if dep["id"] == conversion._id)
-    # 转换必须等待真正的重置完成事件，纯 JS 事件的 then 在支持版本中不会可靠触发。
-    reset_event = app.fns[dependency["trigger_after"]]
-    assert reset_event.name == "reset_download_ui"
-    assert len(reset_event.fn()) == len(reset_event.outputs)
+    # 浏览器通过票据变化启动普通请求；公开 API 仍保留四个输入与原生文件输出。
+    assert len(conversion.inputs) == 4
+    ui_conversion = next(fn for fn in app.fns.values() if fn.name == "convert_ui")
+    ticket = ui_conversion.inputs[-1]
+    reset_dependency = next(
+        dep for dep in app.config["dependencies"] if ticket._id in dep["outputs"] and '"begin"' in (dep["js"] or "")
+    )
+    assert reset_dependency["backend_fn"] is False
+    assert "Preparing request..." in reset_dependency["js"]
+    upload = next(block for block in app.blocks.values() if "mineru-upload-file" in (block.elem_classes or []))
+    reset_on_upload = next(
+        dep
+        for dep in app.config["dependencies"]
+        if (upload._id, "change") in dep["targets"] and dep["outputs"] == reset_dependency["outputs"][1:-4]
+    )
+    assert reset_dependency["outputs"][0] not in reset_on_upload["outputs"]
+    assert reset_on_upload["js"] and reset_on_upload["backend_fn"] is False
     handlers = [fn for fn in app.fns.values() if fn.name == "handler"]
     assert len(handlers) == 7
     files = []

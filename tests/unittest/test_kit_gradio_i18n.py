@@ -37,6 +37,7 @@ def test_i18n_launch_and_component_contract(tmp_path: Path) -> None:
     assert dictionary["zh-CN"][checkbox.info.key] == "忽略 PDF 文本层并进行 OCR"
     assert dictionary["en"][checkbox.info.key] == "Ignore the PDF text layer and perform OCR"
     assert "__MINERU_I18N__" not in demo._mineru_kit_js
+    assert "__MINERU_STATUS_TIMER__" not in demo._mineru_kit_js
 
 
 def test_bilingual_errors_and_html_keep_untrusted_details_as_text() -> None:
@@ -68,13 +69,28 @@ def test_frontend_language_policy_and_dynamic_events() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_browser_local_status_timer_lifecycle() -> None:
+    """在真实前端脚本中验证百分之一秒更新、重绘续时、双语与完成后停止。"""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for frontend state tests")
+    result = subprocess.run(
+        [node, str(Path(__file__).with_name("test_kit_gradio_status_timer.cjs"))],
+        input=json.dumps(MESSAGES),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("outcome", ["success", "parse_failure", "output_failure"])
 def test_conversion_preserves_all_preview_components_until_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
-    """暂停真实生成器，确认首帧、处理状态和失败都不改变已有四种预览。"""
+    """暂停普通转换请求，确认处理期间不发送预览更新且失败保留已有四种预览。"""
     from mineru.kit.gradio import app as app_module
 
     source = tmp_path / "document.csv"
@@ -110,15 +126,14 @@ def test_conversion_preserves_all_preview_components_until_success(
         updates: list[tuple[object, ...]] = []
 
         async def collect() -> None:
-            """独立消费生成器，避免测试本身阻挡状态通知和任务启动。"""
-            async for update in handler(str(source), 0, ""):
-                updates.append(update)
+            """独立等待普通转换请求，避免阻挡后台阶段通知。"""
+            updates.append(await handler(str(source), 0, ""))
 
         consumer = asyncio.create_task(collect())
         try:
             await asyncio.wait_for(started.wait(), timeout=3)
-            assert updates
-            assert all(update[2:6] == ({"__type__": "update"},) * 4 for update in updates)
+            assert not updates
+            assert not consumer.done()
             finish.set()
             await asyncio.wait_for(consumer, timeout=10)
         finally:
