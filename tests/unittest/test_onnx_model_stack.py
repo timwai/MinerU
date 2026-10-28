@@ -220,8 +220,10 @@ def test_seal_uses_poly_crops_and_keeps_variable_vertex_counts(monkeypatch: pyte
 
 def test_atom_and_context_caches_are_isolated_by_stack(monkeypatch: pytest.MonkeyPatch) -> None:
     """同一 CPU 上的 full/light 原子模型与上下文必须分别缓存。"""
-    from mineru.model.runtime import hybrid
+    from mineru.model.runtime import cpu_threads, hybrid
 
+    # 缓存测试使用模型替身，同时隔离真实 Torch 的线程初始化依赖。
+    monkeypatch.setattr(cpu_threads, "initialize_torch_threads", Mock(return_value=2))
     monkeypatch.setattr(hybrid.AtomModelSingleton, "_models", {})
     monkeypatch.setattr(hybrid.HybridLocalModelContextSingleton, "_models", {})
     factory = Mock(side_effect=lambda **kwargs: object())
@@ -253,6 +255,9 @@ def test_light_standard_does_not_probe_platform_engines(monkeypatch: pytest.Monk
 def test_light_table_models_use_only_the_onnx_bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """三种表格模型从 Light 仓库取文件，并把相同 small_backend 传给共享 OCR。"""
     from mineru.model.runtime import hybrid
+    from mineru.model.table.cls import paddle_table_cls
+    from mineru.model.table.rec.slanet_plus import main as slanet
+    from mineru.model.table.rec.unet_table import main as unet
 
     resources = []
 
@@ -265,9 +270,9 @@ def test_light_table_models_use_only_the_onnx_bundle(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(download.ModelPath, "ensure", ensure)
     ocr_factory = Mock(return_value=object())
     monkeypatch.setattr(hybrid.AtomModelSingleton, "get_atom_model", ocr_factory)
-    monkeypatch.setattr(hybrid, "PaddleTableModel", Mock())
-    monkeypatch.setattr(hybrid, "UnetTableModel", Mock())
-    monkeypatch.setattr(hybrid, "PaddleTableClsModel", Mock())
+    monkeypatch.setattr(slanet, "PaddleTableModel", Mock())
+    monkeypatch.setattr(unet, "UnetTableModel", Mock())
+    monkeypatch.setattr(paddle_table_cls, "PaddleTableClsModel", Mock())
     hybrid.wireless_table_model_init(small_backend="onnx", device="cpu")
     hybrid.wired_table_model_init(small_backend="onnx", device="cpu")
     hybrid.table_cls_model_init(small_backend="onnx")

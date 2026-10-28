@@ -13,15 +13,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-import cv2
 import numpy as np
 import yaml
+from docvortex.image import resize_image
 from loguru import logger
 from PIL import Image
 from tqdm import tqdm
 
+from ..ocr.image import rgb_to_bgr
 from ..runtime.onnx import ort_session
-from .pp_doclayout_v2_base import PP_DOCLAYOUT_V2_LABELS, PPDocLayoutV2PostProcessor
+from .pp_doclayout_v2_base import DEFAULT_CLASS_THRESHOLDS, PP_DOCLAYOUT_V2_LABELS, PPDocLayoutV2PostProcessor
 
 __all__ = ["PPDocLayoutV2LayoutModelONNX"]
 
@@ -37,7 +38,7 @@ class PPDocLayoutV2LayoutModelONNX(PPDocLayoutV2PostProcessor):
 
     差异：
     - 构造函数接收 onnx 文件路径（单个 ``.onnx``），而非 HF 模型目录
-    - 不依赖 transformers / torch，仅用 onnxruntime + numpy + cv2
+    - 不依赖 transformers / torch，使用 onnxruntime、numpy 及 DocVortex 公共图像接口
     - 预处理固定为 800x800 BICUBIC + /255（与 PaddlePaddle 官方 inference.yml 一致）
     - 阅读顺序直接来自 ONNX 输出的第 6/7 列（lexsort），无需 reading_order head
     """
@@ -47,18 +48,16 @@ class PPDocLayoutV2LayoutModelONNX(PPDocLayoutV2PostProcessor):
         weight: str,
         device: Optional[str] = None,
         imgsz: Tuple[int, int] = _INPUT_SIZE,
-        conf: float = 0.45,
         use_paddlex_filter_boxes: bool = True,
         intra_op_num_threads: int = 0,
         config_path: str | None = None,
     ) -> None:
-        """加载 CPU 检测图及官方预处理配置。"""
+        """加载 CPU 检测图及官方预处理配置，检测筛选使用官方分类阈值。"""
         self.device = "cpu"
-        self.conf = conf
         self.use_paddlex_filter_boxes = use_paddlex_filter_boxes
         self.model_path = str(weight)
         self.imgsz = imgsz
-        self.interpolation = cv2.INTER_CUBIC
+        self.interpolation = 2  # OpenCV INTER_CUBIC，与官方预处理配置的整数编码一致。
         configuration_path = Path(config_path) if config_path else Path(weight).with_suffix(".yml")
         if config_path or configuration_path.is_file():
             with configuration_path.open(encoding="utf-8") as handle:
@@ -79,6 +78,7 @@ class PPDocLayoutV2LayoutModelONNX(PPDocLayoutV2PostProcessor):
 
     def _preprocess_single_image(self, image: Union[np.ndarray, Image.Image]) -> Tuple[np.ndarray, Tuple[int, int]]:
         """Resize 到 800x800 (BICUBIC) + /255，返回 CHW float32 ndarray。"""
+
         if isinstance(image, Image.Image):
             pil_image = image.convert("RGB")
             target_size = pil_image.size[1], pil_image.size[0]
@@ -86,15 +86,40 @@ class PPDocLayoutV2LayoutModelONNX(PPDocLayoutV2PostProcessor):
         elif isinstance(image, np.ndarray):
             arr = image
             if arr.ndim == 3 and arr.shape[2] == 3:
-                arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+                arr = rgb_to_bgr(arr)
             target_size = arr.shape[0], arr.shape[1]
         else:
             raise TypeError(f"Unsupported image type for PP-DocLayoutV2 ONNX: {type(image)}")
 
-        resized = cv2.resize(arr, (self.imgsz[1], self.imgsz[0]), interpolation=self.interpolation)
+        resized = resize_image(
+            arr,
+            (self.imgsz[1], self.imgsz[0]),
+            interpolation={0: "nearest", 1: "linear", 2: "cubic", 3: "area", 4: "lanczos4"}[self.interpolation],
+        )
         norm = resized.astype(np.float32) * self.rescale_factor
         chw = norm.transpose(2, 0, 1)
         return chw, target_size
+
+    @staticmethod
+    def _filter_by_class_thresholds(sample: np.ndarray) -> np.ndarray:
+        """按最高分类分数确定候选有效性，再对其各个标签应用官方分类阈值。"""
+        if len(sample) == 0:
+            return sample
+
+        labels = sample[:, 0].astype(np.int64)
+        scores = sample[:, 1]
+        thresholds = np.asarray(DEFAULT_CLASS_THRESHOLDS, dtype=scores.dtype)[labels]
+        # 同一检测候选的多标签行共享原始坐标和阅读顺序键，须在逐页范围内分组。
+        _, query_ids = np.unique(sample[:, 2:8], axis=0, return_inverse=True)
+        # 与 argmax 的同分规则一致：最高分相同时，较小类别编号作为候选主类别。
+        primary_order = np.lexsort((labels, -scores, query_ids))
+        sorted_query_ids = query_ids[primary_order]
+        first_in_query = np.concatenate(([True], sorted_query_ids[1:] != sorted_query_ids[:-1]))
+        primary_indices = primary_order[first_in_query]
+        valid_queries = np.empty(len(primary_indices), dtype=bool)
+        valid_queries[query_ids[primary_indices]] = scores[primary_indices] >= thresholds[primary_indices]
+        keep = valid_queries[query_ids] & (scores >= thresholds)
+        return sample[keep]
 
     def _run_session(self, pixel_values: np.ndarray, target_sizes: Sequence[Tuple[int, int]]) -> List[Dict[str, np.ndarray]]:
         """跑一次 ONNX 推理，解析输出为内部 prediction dict。
@@ -137,9 +162,7 @@ class PPDocLayoutV2LayoutModelONNX(PPDocLayoutV2PostProcessor):
             end = offset + int(count)
             sample = preds[offset:end]
             offset = end
-            scores = sample[:, 1]
-            keep = scores >= self.conf
-            sample = sample[keep]
+            sample = self._filter_by_class_thresholds(sample)
 
             if sample.shape[1] >= 8:
                 order_idx = np.lexsort((-sample[:, 7], sample[:, 6]))

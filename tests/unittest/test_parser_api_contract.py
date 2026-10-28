@@ -1990,7 +1990,7 @@ def test_complete_upload_rejects_size_mismatch(tmp_path: Path) -> None:
 
 
 def test_get_upload_expires_pending_records_and_discards_staged_data(tmp_path: Path) -> None:
-    """expires_at 过后 pending 上传惰性转为 expired 终态并丢弃暂存数据，后续 PUT/complete 收到 409。"""
+    """上传到期后的新读取、写入和完成请求统一返回 404，并丢弃暂存数据。"""
     file_store = FileStore(tmp_path / "api-files")
     upload = file_store.create_upload(
         CreateUploadRequest.model_validate({"filename": "demo.pdf", "bytes": 4, "mime_type": "application/pdf"})
@@ -2001,20 +2001,19 @@ def test_get_upload_expires_pending_records_and_discards_staged_data(tmp_path: P
 
     file_store._uploads[upload.id].expires_at = int(time.time()) - 1
 
-    rec = file_store.get_upload(upload.id)
-
-    assert rec.status == "expired"
+    for operation in (
+        lambda: file_store.get_upload(upload.id),
+        lambda: file_store.store_upload_data(upload.id, b"demo"),
+        lambda: file_store.complete_upload(upload.id, None),
+    ):
+        with pytest.raises(api_server.ApiServerError) as exc_info:
+            operation()
+        assert exc_info.value.status_code == 404
     assert not staged.is_file()
-    with pytest.raises(api_server.ApiServerError) as exc_info:
-        file_store.store_upload_data(upload.id, b"demo")
-    assert exc_info.value.status_code == 409
-    with pytest.raises(api_server.ApiServerError) as exc_info:
-        file_store.complete_upload(upload.id, None)
-    assert exc_info.value.status_code == 409
 
 
-def test_get_upload_keeps_completed_records_after_expiry(tmp_path: Path) -> None:
-    """completed 是终态，expires_at 过后不再翻转，文件保留交给独立的 retention 机制。"""
+def test_get_upload_hides_completed_records_after_expiry(tmp_path: Path) -> None:
+    """已完成上传到期后同样不允许新的读取请求复用该上传视图。"""
     file_store = FileStore(tmp_path / "api-files")
     sha = "00" * 32
     file_store.store_blob(b"demo", sha256hex=sha)
@@ -2027,7 +2026,9 @@ def test_get_upload_keeps_completed_records_after_expiry(tmp_path: Path) -> None
 
     file_store._uploads[upload.id].expires_at = int(time.time()) - 1
 
-    assert file_store.get_upload(upload.id).status == "completed"
+    with pytest.raises(api_server.ApiServerError) as exc_info:
+        file_store.get_upload(upload.id)
+    assert exc_info.value.status_code == 404
 
 
 def test_run_job_preserves_input_file_id_and_keeps_source_undownloadable(
@@ -2495,7 +2496,8 @@ def test_api_server_standard_no_flash_state_and_metadata(tmp_path: Path, monkeyp
     assert app.state.effort == "high"
     assert app.state.flash_enabled is False
     assert [tier["id"] for tier in app.state.tiers] == ["basic", "standard", "advanced"]
-    assert app.state.model_ids == ["Hybrid-Basic", "MinerU-HTML", "MinerU2.5-Pro-2605-1.2B"]
+    assert app.state.model_ids == [api_server._VIRTUAL_MODEL_ID]
+    assert api_server._VIRTUAL_MODEL_ID == f"mineru-{api_server.__version__}"
     assert app.state.tier_runtime_options["basic"].effort == "medium"
     assert app.state.tier_runtime_options["standard"].effort == "high"
     assert app.state.tier_runtime_options["advanced"].effort == "xhigh"
@@ -2541,6 +2543,7 @@ def test_api_server_standard_http_metadata(tmp_path: Path, monkeypatch: pytest.M
         health_response = client.get("/v1/health")
         tiers_response = client.get("/v1/tiers")
         models_response = client.get("/v1/models")
+        model_detail_response = client.get(f"/v1/models/{api_server._VIRTUAL_MODEL_ID}")
 
     assert health_response.status_code == 200
     assert health_response.json()["status"] == "ok"
@@ -2549,20 +2552,47 @@ def test_api_server_standard_http_metadata(tmp_path: Path, monkeypatch: pytest.M
     assert "runtime" not in health_response.json()
     assert tiers_response.status_code == 200
     assert [tier["id"] for tier in tiers_response.json()["data"]] == ["flash", "basic", "standard", "advanced"]
+    assert all(tier["current_model"] == api_server._VIRTUAL_MODEL_ID for tier in tiers_response.json()["data"])
     assert models_response.status_code == 200
-    assert [model["id"] for model in models_response.json()["data"]] == [
-        "MinerU-Flash",
-        "Hybrid-Basic",
-        "MinerU-HTML",
-        "MinerU2.5-Pro-2605-1.2B",
-    ]
+    assert [model["id"] for model in models_response.json()["data"]] == [api_server._VIRTUAL_MODEL_ID]
+    assert models_response.json()["data"][0]["description"] == api_server._VIRTUAL_MODEL_DESCRIPTION
+    assert model_detail_response.status_code == 200
+    assert model_detail_response.json()["id"] == api_server._VIRTUAL_MODEL_ID
+    assert model_detail_response.json()["created"] == app.state.model_registered_at
+
+
+def test_api_server_models_created_is_stable_across_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归：created 是部署注册时间，两次请求之间不随墙钟跳动。"""
+    _stub_api_server_dependency_preflight(monkeypatch)
+    app = create_app(upload_dir=str(tmp_path), tier="standard")
+
+    with TestClient(app) as client:
+        first = client.get("/v1/models").json()["data"][0]["created"]
+        second = client.get("/v1/models").json()["data"][0]["created"]
+
+    assert first == second == app.state.model_registered_at
+
+
+def test_api_server_model_detail_rejects_unknown_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """非虚拟模型 id 一律 404，包括历史上的引擎品牌名。"""
+    _stub_api_server_dependency_preflight(monkeypatch)
+    app = create_app(upload_dir=str(tmp_path), tier="standard")
+
+    with TestClient(app) as client:
+        response = client.get("/v1/models/MinerU2.5-Pro-2605-1.2B")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "model_not_found"
 
 
 def test_api_server_no_advanced_http_metadata_keeps_shared_models(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """验证能力接口隐藏 Advanced，同时保留 Standard 仍需使用的共享模型。"""
+    """验证能力接口隐藏 Advanced；虚拟模型 id 不随档位开关变化。"""
     _stub_api_server_dependency_preflight(monkeypatch)
     app = create_app(upload_dir=str(tmp_path), tier="standard", no_advanced=True)
 
@@ -2573,12 +2603,7 @@ def test_api_server_no_advanced_http_metadata_keeps_shared_models(
     assert tiers_response.status_code == 200
     assert [tier["id"] for tier in tiers_response.json()["data"]] == ["flash", "basic", "standard"]
     assert models_response.status_code == 200
-    assert [model["id"] for model in models_response.json()["data"]] == [
-        "MinerU-Flash",
-        "Hybrid-Basic",
-        "MinerU-HTML",
-        "MinerU2.5-Pro-2605-1.2B",
-    ]
+    assert [model["id"] for model in models_response.json()["data"]] == [api_server._VIRTUAL_MODEL_ID]
 
 
 def test_api_server_model_preload_failure_keeps_health_diagnostics_and_rejects_capabilities(
@@ -2586,9 +2611,7 @@ def test_api_server_model_preload_failure_keeps_health_diagnostics_and_rejects_c
 ) -> None:
     _stub_api_server_dependency_preflight(monkeypatch)
 
-    def _fail_preload(
-        startup_tier: DeploymentTier, *, vlm_config: VlmConfig | None = None
-    ) -> api_server._ModelPreloadResult:
+    def _fail_preload(startup_tier: DeploymentTier, *, vlm_config: VlmConfig | None = None) -> api_server._ModelPreloadResult:
         """模拟包含 VLM 初始化在内的服务预加载失败。"""
         raise ValueError("CUDA is not available.")
 
@@ -2613,9 +2636,7 @@ def test_api_server_model_preload_is_opt_in_and_ignored_for_flash(tmp_path: Path
     _stub_api_server_dependency_preflight(monkeypatch)
     calls: list[str] = []
 
-    def _preload(
-        startup_tier: DeploymentTier, *, vlm_config: VlmConfig | None = None
-    ) -> api_server._ModelPreloadResult:
+    def _preload(startup_tier: DeploymentTier, *, vlm_config: VlmConfig | None = None) -> api_server._ModelPreloadResult:
         """记录预加载调用，兼容显式 VLM 配置传入。"""
         calls.append(startup_tier)
         return api_server._ModelPreloadResult(tier=startup_tier, engine="test")
