@@ -235,6 +235,117 @@ def test_standalone_api_matches_kit_arguments_and_exit_code(
     assert calls[0] == calls[1]
 
 
+
+def test_api_server_accepts_environment_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kit and standalone API CLIs resolve the same env-backed options without starting a server."""
+    calls: list[list[str]] = []
+
+    def fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        assert prog_name == "mineru-kit api-server"
+        assert standalone_mode is False
+        calls.append(args)
+
+    env = {
+        "MINERU_API_HOST": "0.0.0.0",
+        "MINERU_API_PORT": "18000",
+        "MINERU_API_TIER": "basic",
+        "MINERU_API_CONCURRENCY": "3",
+        "MINERU_API_PRELOAD_MODELS": "true",
+        "MINERU_API_UPLOAD_DIR": "/data/mineru",
+        "MINERU_API_RETENTION_SECONDS": "3600",
+    }
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", fake_main)
+
+    result = runner.invoke(app, ["api-server"], env=env)
+    assert result.exit_code == 0, result.output
+
+    with monkeypatch.context() as context:
+        for key, value in env.items():
+            context.setenv(key, value)
+        assert _invoke_standalone_command(context, api_server.main, "mineru-api", []) == 0
+
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    args = calls[0]
+    for option, expected in (
+        ("--host", "0.0.0.0"),
+        ("--port", "18000"),
+        ("--tier", "basic"),
+        ("--concurrency", "3"),
+        ("--upload-dir", "/data/mineru"),
+        ("--retention-seconds", "3600"),
+    ):
+        assert args[args.index(option) + 1] == expected
+    assert "--preload-models" in args
+
+
+def test_api_server_explicit_options_override_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit CLI settings, including false for the preload flag, win over environment values."""
+    calls: list[list[str]] = []
+
+    def fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", fake_main)
+    result = runner.invoke(
+        app,
+        [
+            "api-server",
+            "--host", "127.0.0.1",
+            "--port", "19000",
+            "--tier", "standard",
+            "--concurrency", "1",
+            "--upload-dir", "/override",
+            "--no-preload-models",
+            "--retention-seconds", "7200",
+        ],
+        env={
+            "MINERU_API_HOST": "0.0.0.0",
+            "MINERU_API_PORT": "18000",
+            "MINERU_API_TIER": "basic",
+            "MINERU_API_CONCURRENCY": "4",
+            "MINERU_API_UPLOAD_DIR": "/data/mineru",
+            "MINERU_API_PRELOAD_MODELS": "true",
+            "MINERU_API_RETENTION_SECONDS": "3600",
+        },
+    )
+    assert result.exit_code == 0, result.output
+    args = calls[0]
+    for option, expected in (
+        ("--host", "127.0.0.1"),
+        ("--port", "19000"),
+        ("--tier", "standard"),
+        ("--concurrency", "1"),
+        ("--upload-dir", "/override"),
+        ("--retention-seconds", "7200"),
+    ):
+        assert args[args.index(option) + 1] == expected
+    assert "--preload-models" not in args
+
+
+@pytest.mark.parametrize(("environment", "expected"), [("true", True), ("false", False), ("1", True), ("0", False)])
+def test_api_server_preload_environment_bool(monkeypatch: pytest.MonkeyPatch, environment: str, expected: bool) -> None:
+    """Boolean environment strings must enable or disable preloading correctly."""
+    calls: list[list[str]] = []
+
+    def fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", fake_main)
+    result = runner.invoke(app, ["api-server"], env={"MINERU_API_PRELOAD_MODELS": environment})
+    assert result.exit_code == 0, result.output
+    assert ("--preload-models" in calls[0]) is expected
+
+
+def test_api_server_invalid_concurrency_environment_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid environment values are validated by the CLI before server startup."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", lambda **kwargs: calls.append(kwargs["args"]))
+    result = runner.invoke(app, ["api-server"], env={"MINERU_API_CONCURRENCY": "not-a-number"})
+    assert result.exit_code != 0
+    assert calls == []
+
+
 @pytest.mark.parametrize("fails", [False, True])
 @pytest.mark.parametrize(
     "args",

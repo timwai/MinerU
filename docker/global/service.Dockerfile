@@ -25,11 +25,15 @@ RUN python -m pip install --upgrade pip && \
 # The parsing service keeps layout/OCR/MFR/table preprocessing local, but does
 # not download the MinerU2.5 VLM weights.
 ENV MINERU_MODEL_SOURCE=local \
-    MINERU_MODEL_SMALL_BACKEND=onnx
+    MINERU_MODEL_SMALL_BACKEND=onnx \
+    MINERU_API_HOST=0.0.0.0 \
+    MINERU_API_PORT=8000 \
+    MINERU_API_TIER=standard \
+    MINERU_API_PRELOAD_MODELS=true
 
 RUN mineru-kit models download MinerU-4_models_onnx --source huggingface
 
 EXPOSE 8000
 
 ENTRYPOINT ["mineru-kit"]
-CMD ["api-server", "--host", "0.0.0.0", "--port", "8000", "--tier", "standard", "--preload-models"]
+CMD ["api-server"]

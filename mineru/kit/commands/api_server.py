@@ -31,12 +31,13 @@ def _normalize_tier_option(tier: str | None) -> ServerTier | None:
 
 
 def api_server_cmd(
-    host: str = typer.Option("127.0.0.1", "--host", help=t("Server host")),
-    port: int = typer.Option(8000, "--port", help=t("Server port")),
-    upload_dir: str = typer.Option("", "--upload-dir", help=t("Upload directory")),
+    host: str = typer.Option("127.0.0.1", "--host", envvar="MINERU_API_HOST", help=t("Server host")),
+    port: int = typer.Option(8000, "--port", envvar="MINERU_API_PORT", help=t("Server port")),
+    upload_dir: str = typer.Option("", "--upload-dir", envvar="MINERU_API_UPLOAD_DIR", help=t("Upload directory")),
     tier: str | None = typer.Option(
         None,
         "--tier",
+        envvar="MINERU_API_TIER",
         help=t("Server capability tier: flash, basic, or standard"),
     ),
     no_flash: bool = typer.Option(False, "--no-flash", help=t("Disable Flash tier advertisement and execution")),
@@ -48,14 +49,17 @@ def api_server_cmd(
         envvar="MINERU_API_RETENTION_SECONDS",
         help=t("Terminal retention seconds (default 86400; 0 disables collection)"),
     ),
-    concurrency: int = typer.Option(1, "--concurrency", help=t("Maximum concurrent parse jobs")),
+    concurrency: int = typer.Option(1, "--concurrency", envvar="MINERU_API_CONCURRENCY", help=t("Maximum concurrent parse jobs")),
     url_timeout: int = typer.Option(60, "--url-timeout", help=t("Timeout for URL source downloads")),
     allow_local_source: bool = typer.Option(False, "--allow-local-source", help=t("Allow local source paths")),
     max_inline_bytes: int = typer.Option(1024 * 1024, "--max-inline-bytes", help=t("Maximum decoded bytes for inline sources")),
     allow_http_source: bool = typer.Option(False, "--allow-http-source", help=t("Allow URL sources to use plain HTTP")),
     disable_image_analysis: bool = typer.Option(False, "--disable-image-analysis", help=t("Disable image analysis")),
     preload_models: bool = typer.Option(
-        False, "--preload-models", help=t("Initialize VLM client and local Hybrid models at startup")
+        False,
+        "--preload-models/--no-preload-models",
+        envvar="MINERU_API_PRELOAD_MODELS",
+        help=t("Initialize VLM client and local Hybrid models at startup"),
     ),
     api_key: str | None = typer.Option(None, "--api-key", help=t("Optional fixed API key")),
     vlm_server_url: str | None = typer.Option(

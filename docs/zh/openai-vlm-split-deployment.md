@@ -35,7 +35,34 @@ Remote on model node:
 docker compose -f docker/compose.split.yaml up -d --build
 ```
 
-模型服务监听 `30000`，解析 API 监听 `8000`。解析容器会等待模型服务健康后启动，并在启动阶段预加载本地小模型以及远程 VLM 客户端。
+模型服务监听 `30000`，解析 API 默认监听 `8000`。解析容器会等待模型服务健康后启动，并在启动阶段预加载本地小模型以及远程 VLM 客户端。
+
+### API 服务环境变量
+
+解析服务采用 `mineru-kit api-server` 原生的环境变量配置，不需要 shell 启动脚本。可在仓库根目录创建 `.env` 文件，例如：
+
+```dotenv
+MINERU_API_HOST=0.0.0.0
+MINERU_API_PORT=8000
+MINERU_API_TIER=standard
+MINERU_API_CONCURRENCY=2
+MINERU_API_PRELOAD_MODELS=true
+MINERU_API_UPLOAD_DIR=/data/mineru
+MINERU_API_DATA_DIR=../data
+MINERU_API_RETENTION_SECONDS=86400
+```
+
+其中 `MINERU_API_DATA_DIR` 是 Compose 的**宿主机挂载路径**（默认相对于 `docker/compose.split.yaml` 所在的 `docker/` 目录解析）；`MINERU_API_UPLOAD_DIR` 是容器内的文件目录。两者组合为 Volume 映射。更改 `MINERU_API_PORT` 时，Compose 会同时调整端口映射和健康检查；外部连接仍需使用对应端口。
+
+环境变量对应的 CLI 选项分别为 `--host`、`--port`、`--tier`、`--concurrency`、`--preload-models`、`--upload-dir` 和 `--retention-seconds`。显式 CLI 参数优先于环境变量；例如将 `MINERU_API_PRELOAD_MODELS=true` 覆盖为关闭，可使用 `--no-preload-models`。若不指定保留期，默认为 86400 秒；设置为 `0` 时关闭过期清理。
+
+Docker Compose 中的 API 启动命令已简化为：
+
+```yaml
+command: ["api-server"]
+```
+
+远程 VLM 的 `MINERU_MODEL_VLM_*` 环境变量仍独立配置。
 
 检查服务：
 
@@ -85,11 +112,14 @@ export MINERU_MODEL_SMALL_BACKEND=onnx
 export MINERU_MODEL_VLM_SERVER_URL=http://MODEL_HOST:30000/v1
 
 mineru-kit models download MinerU-4_models_onnx --source huggingface
-mineru-kit api-server \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --tier standard \
-  --preload-models
+export MINERU_API_HOST=0.0.0.0
+export MINERU_API_PORT=8000
+export MINERU_API_TIER=standard
+export MINERU_API_CONCURRENCY=2
+export MINERU_API_PRELOAD_MODELS=true
+export MINERU_API_UPLOAD_DIR=/data/mineru
+
+mineru-kit api-server
 ```
 
 `MODEL_HOST` 替换为模型服务器 IP 或域名。

@@ -39,8 +39,17 @@ services:
       mineru-model:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "${MINERU_API_PORT:-8000}:${MINERU_API_PORT:-8000}"
     environment:
+      # API server options are read natively from environment by mineru-kit.
+      MINERU_API_HOST: "${MINERU_API_HOST:-0.0.0.0}"
+      MINERU_API_PORT: "${MINERU_API_PORT:-8000}"
+      MINERU_API_TIER: "${MINERU_API_TIER:-standard}"
+      MINERU_API_CONCURRENCY: "${MINERU_API_CONCURRENCY:-2}"
+      MINERU_API_PRELOAD_MODELS: "${MINERU_API_PRELOAD_MODELS:-true}"
+      MINERU_API_UPLOAD_DIR: "${MINERU_API_UPLOAD_DIR:-/data/mineru}"
+      MINERU_API_RETENTION_SECONDS: "${MINERU_API_RETENTION_SECONDS:-86400}"
+
       # Small Hybrid models stay local on the parser node.
       MINERU_MODEL_SOURCE: local
       MINERU_MODEL_SMALL_BACKEND: onnx
@@ -51,17 +60,11 @@ services:
       MINERU_MODEL_VLM_API_KEY: "${MINERU_VLM_API_KEY:-}"
       MINERU_MODEL_VLM_HTTP_TIMEOUT: "${MINERU_VLM_HTTP_TIMEOUT:-600}"
       MINERU_MODEL_VLM_MAX_CONCURRENCY: "${MINERU_VLM_MAX_CONCURRENCY:-100}"
-    command:
-      - api-server
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --tier
-      - standard
-      - --preload-models
+    volumes:
+      - "${MINERU_API_DATA_DIR:-../data}:${MINERU_API_UPLOAD_DIR:-/data/mineru}"
+    command: ["api-server"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/v1/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:$${MINERU_API_PORT}/v1/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
