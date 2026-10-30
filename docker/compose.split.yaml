@@ -49,6 +49,8 @@ services:
       MINERU_API_PRELOAD_MODELS: "${MINERU_API_PRELOAD_MODELS:-true}"
       MINERU_API_UPLOAD_DIR: "${MINERU_API_UPLOAD_DIR:-/data/mineru}"
       MINERU_API_RETENTION_SECONDS: "${MINERU_API_RETENTION_SECONDS:-86400}"
+      # Set MINERU_API_KEY in your local environment to enable Bearer authentication.
+      MINERU_API_KEY: "${MINERU_API_KEY:-}"
 
       # Small Hybrid models stay local on the parser node.
       MINERU_MODEL_SOURCE: local

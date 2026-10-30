@@ -2963,6 +2963,7 @@ def _build_server_log_config(log_level: str) -> dict[str, Any]:
     "--api-key",
     default=None,
     type=str,
+    envvar="MINERU_API_KEY",
     help="Optional API key. When set, clients must pass Authorization: Bearer <key> to access protected endpoints.",
 )
 def main(

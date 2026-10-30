@@ -61,7 +61,12 @@ def api_server_cmd(
         envvar="MINERU_API_PRELOAD_MODELS",
         help=t("Initialize VLM client and local Hybrid models at startup"),
     ),
-    api_key: str | None = typer.Option(None, "--api-key", help=t("Optional fixed API key")),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        envvar="MINERU_API_KEY",
+        help=t("Optional fixed API key (also MINERU_API_KEY)"),
+    ),
     vlm_server_url: str | None = typer.Option(
         None, "--vlm-server-url", help=t("Remote VLM URL; empty value selects local VLM")
     ),

@@ -50,6 +50,7 @@ MINERU_API_PRELOAD_MODELS=true
 MINERU_API_UPLOAD_DIR=/data/mineru
 MINERU_API_DATA_DIR=../data
 MINERU_API_RETENTION_SECONDS=86400
+# Optional: configure MINERU_API_KEY through a secure secret source to enable Bearer auth.
 ```
 
 其中 `MINERU_API_DATA_DIR` 是 Compose 的**宿主机挂载路径**（默认相对于 `docker/compose.split.yaml` 所在的 `docker/` 目录解析）；`MINERU_API_UPLOAD_DIR` 是容器内的文件目录。两者组合为 Volume 映射。更改 `MINERU_API_PORT` 时，Compose 会同时调整端口映射和健康检查；外部连接仍需使用对应端口。
@@ -61,6 +62,42 @@ Docker Compose 中的 API 启动命令已简化为：
 ```yaml
 command: ["api-server"]
 ```
+
+### API Bearer 鉴权
+
+API Server 现已原生支持 `MINERU_API_KEY`，与 `--api-key` 等价。未设置或设置为空时不启用 API 鉴权；设置非空值后，除 `/v1/health`、`/v1/models`、`/v1/tiers` 等公开接口外，其余请求必须携带 `Authorization: Bearer <token>`。显式 `--api-key` 参数优先于环境变量。
+
+Docker Compose 开发测试可通过宿主机环境变量传入（不要将真实密钥提交到仓库）：
+
+```bash
+export MINERU_API_KEY="replace-with-a-strong-secret"
+docker compose -f docker/compose.split.yaml up -d --build
+
+curl -i http://127.0.0.1:8000/v1/usage
+# Expected HTTP 401 without Authorization
+
+curl -i -H "Authorization: Bearer ${MINERU_API_KEY}" http://127.0.0.1:8000/v1/usage
+# Expected HTTP 200 with the correct token
+```
+
+生产环境建议通过 Kubernetes Secret 注入，而不是将密钥写在 Deployment 或 CLI 参数中：
+
+```yaml
+containers:
+  - name: mineru-api
+    image: mineru-api:4-split
+    args: ["api-server"]
+    env:
+      - name: MINERU_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: mineru-api-auth
+            key: api-key
+```
+
+使用 `kubectl create secret generic mineru-api-auth --from-file=api-key=./api-key.txt` 创建 Secret；确保文件没有意外换行。Kubernetes Secret 仍须配合 RBAC、加密存储和访问控制。避免把真实密钥放在 CLI 参数中（可能被进程列表看到）或写进镜像。Docker Compose 的环境变量和渲染配置也可能被有权限的操作者查看。若通过外网访问，应启用 HTTPS。
+
+**区别：** `MINERU_API_KEY` 是客户端访问 MinerU API Server 的鉴权密钥；`MINERU_MODEL_VLM_API_KEY` 是 API Server 请求远程 GPU VLM 模型服务的密钥，两者互不影响。
 
 远程 VLM 的 `MINERU_MODEL_VLM_*` 环境变量仍独立配置。
 

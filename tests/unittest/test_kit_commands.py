@@ -346,6 +346,74 @@ def test_api_server_invalid_concurrency_environment_is_rejected(monkeypatch: pyt
     assert calls == []
 
 
+
+def test_api_server_reads_api_key_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kit and standalone entrypoints accept an API key without CLI argv."""
+    seen: list[list[str]] = []
+
+    def fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        assert prog_name == "mineru-kit api-server"
+        assert standalone_mode is False
+        seen.append(args)
+
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", fake_main)
+    monkeypatch.setenv("MINERU_API_KEY", "env-test-token")
+
+    result = runner.invoke(app, ["api-server"])
+    assert result.exit_code == 0, result.output
+    assert _invoke_standalone_command(monkeypatch, api_server.main, "mineru-api", []) == 0
+
+    assert len(seen) == 2
+    assert seen[0] == seen[1]
+    args = seen[0]
+    assert args[args.index("--api-key") + 1] == "env-test-token"
+
+
+def test_api_server_explicit_api_key_overrides_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit --api-key takes precedence over MINERU_API_KEY."""
+    seen: list[list[str]] = []
+
+    def fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        seen.append(args)
+
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", fake_main)
+    monkeypatch.setenv("MINERU_API_KEY", "env-test-token")
+
+    result = runner.invoke(app, ["api-server", "--api-key", "cli-test-token"])
+    assert result.exit_code == 0, result.output
+    assert seen[0][seen[0].index("--api-key") + 1] == "cli-test-token"
+
+
+def test_api_server_empty_api_key_environment_keeps_auth_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unset or blank key must not accidentally enable Bearer authentication."""
+    seen: list[list[str]] = []
+
+    def fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
+        seen.append(args)
+
+    monkeypatch.setattr(api_server.parser_api_server.main, "main", fake_main)
+    monkeypatch.setenv("MINERU_API_KEY", "")
+    result = runner.invoke(app, ["api-server"])
+    assert result.exit_code == 0, result.output
+    assert "--api-key" not in seen[0]
+
+    monkeypatch.delenv("MINERU_API_KEY")
+    result = runner.invoke(app, ["api-server"])
+    assert result.exit_code == 0, result.output
+    assert "--api-key" not in seen[1]
+
+
+def test_parser_api_cli_declares_api_key_environment_variable() -> None:
+    """The lower-level click entrypoint supports the same environment binding."""
+    api_key_option = next(
+        parameter
+        for parameter in api_server.parser_api_server.main.params
+        if parameter.name == "api_key"
+    )
+    assert isinstance(api_key_option, click.Option)
+    assert api_key_option.envvar == "MINERU_API_KEY"
+
+
 @pytest.mark.parametrize("fails", [False, True])
 @pytest.mark.parametrize(
     "args",
