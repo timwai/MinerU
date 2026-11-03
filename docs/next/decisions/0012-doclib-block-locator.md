@@ -1,5 +1,7 @@
 # ADR-0012: Doclib Block Locator
 
+> 历史决策记录：保留当时的背景、状态和设计。当前接口与实现归属以 [开发入口](../README.md) 和现行规范为准；文中的历史模块路径不保证仍存在。
+
 状态: Accepted
 日期: 2026-06-15
 相关文档: 0011-doclib-doc-short-id.md, ../middle-json/agent-gaps.md, ../middle-json/structured-content-schema.md, ../workflows.md
@@ -47,6 +49,14 @@ doc:ab12cd3/tier:basic/page:1/block:3
 | `tier` | 实际解析档位: `flash` / `basic` / `standard` / `advanced`。 |
 | `page_no` | 1-based 页号。 |
 | `block_no` | 1-based block 号。 |
+
+### 请求页选择与稳定块引用 {#page-selection-and-block-references}
+
+`read_content()` 请求定位器的 `page:` 部分复用解析输入页范围语法：单页数字、`rN`、区间、逗号组合和 `all`。例如 `page:r1` 是最后一页，`page:r3-r1` 是最后三页，`page:1,3,r1` 是第一、第三及最后一页。倒数页和 `all` 必须依据文档总页数求值，不从部分缓存推算。
+
+求值、排序、去重和越界裁剪复用 DocVortex 公共页范围算法。响应定位器及生成的 block reference 始终使用实际 1-based 页码；`ContentCursor.page_no` 保持整数，不把范围加入稳定块引用协议。带 `/block:`、`/char:` 或图片读取时，选择必须解析为单页；多页选择不接受非零 context。
+
+范围截断时，`next_request` 保留规范化页范围定位器并携带绝对块/字符 `after`，供下一次 `read_content(locator, after=...)` 使用。续读只访问原范围内尚未完成的内容，结束后不推荐范围外页面。已有数字单点定位及单点读取的续读行为保持不变，不新增 `page:last` 别名。
 
 ## Block 编号来源
 

@@ -17,8 +17,9 @@ ScanKind = Literal["manual", "watch"]
 ScanSource = Literal["unknown", "cli", "sdk", "api", "watch", "system"]
 RuleType = Literal["exclude", "parsing_rule"]
 WatchStatus = Literal["active", "unreachable"]
-TelemetryConsentState = Literal["unset", "enabled", "disabled"]
-TelemetryAction = Literal["enable", "disable", "flush"]
+TelemetryState = Literal["enabled", "disabled"]
+TelemetryStateSource = Literal["default", "user", "environment", "error"]
+TelemetryAction = Literal["enable", "disable", "flush", "notice-shown"]
 InvalidateTarget = Literal["parses"]
 ForgetMatchedAs = Literal["file", "directory", "none"]
 ConfigSource = Literal["default", "override", "environment"]
@@ -412,8 +413,8 @@ class RemoteUsageCurrent(DoclibModel):
 
 
 class RemoteUsageLimits(DoclibModel):
-    max_pages_per_file: int
-    max_file_size_bytes: int
+    max_pages_per_file: int | None
+    max_file_size_bytes: int | None
     max_files_per_job: int
     max_concurrent_jobs: int
     max_file_retention_days: int | None = None
@@ -674,7 +675,9 @@ class TelemetryPayload(DoclibModel):
 
 
 class TelemetryStatusResponse(DoclibModel):
-    state: TelemetryConsentState
+    state: TelemetryState
+    source: TelemetryStateSource = "default"
+    notice_shown: bool = False
     installation_id: str
     pending_periods: int = 0
     pending_metrics: int = 0
@@ -687,7 +690,8 @@ class TelemetryPreviewResponse(DoclibModel):
 
 class TelemetryActionResponse(DoclibModel):
     action: TelemetryAction
-    state: TelemetryConsentState
+    state: TelemetryState
+    source: TelemetryStateSource = "default"
     installation_id: str
     accepted: bool = True
     executed: bool = True

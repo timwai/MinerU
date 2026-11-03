@@ -22,9 +22,11 @@
 | 子命令 | 作用 | 文档 |
 |--------|------|------|
 | `mineru-kit models` | 下载、查看和校验本地模型配置 | [mineru-kit models](mineru-kit-models.md) |
+| `mineru-kit hardware` | 自动推荐档位及只读硬件/运行时诊断 | [mineru-kit hardware](mineru-kit-hardware.md) |
 | `mineru-kit parse` | 无状态文件/目录批处理解析 | [mineru-kit parse](mineru-kit-parse.md) |
 | `mineru-kit webui` | 基于 V1 API 的本地文档解析 Web UI | [mineru-kit webui](mineru-kit-webui.md) |
 | `mineru-kit api-server` | 启动兼容统一 API 的本地解析服务 | [mineru-kit api-server](mineru-kit-api-server.md) |
+| `mineru-kit file-parse-server` | 单文件直传、同步附件和超时恢复，连接既有 Tasks 服务 | [file_parse](https://opendatalab.github.io/MinerU/zh/usage/file_parse/) |
 | `mineru-kit vlm-server` | 本地 VLM 服务，兼容 OpenAI Chat Completions 协议 | [mineru-kit vlm-server](mineru-kit-vlm-server.md) |
 | `mineru-kit router` | 启动 V1 路由服务，转发到已有 upstream 或管理本地 worker | 仅暴露 `/v1/*` |
 
@@ -50,7 +52,7 @@ mineru-api --host 127.0.0.1 --port 8000 --tier standard
 
 | 能力 | `mineru` | `mineru-kit` |
 |------|----------|--------------|
-| 本地数据库 | 有 | 无 |
+| 本地文档库 | 有 | 无；file-parse-server 仅保存独立请求恢复记录 |
 | SHA256 缓存 | 有 | 无 |
 | STDOUT 默认阅读 | 有 | 不是默认重点 |
 | 目录批处理 | 非首要 | 核心能力 |
@@ -86,10 +88,13 @@ mineru-api --host 127.0.0.1 --port 8000 --tier standard
 
 当前 `mineru-kit router` 已确定：
 
-- 入口参数包括 `--host`、`--port`、`--reload`、`--upstream-url`、`--local-gpus`、`--worker-host`、`--worker-tier`、`--worker-concurrency`、`--preload-models`。
+- 入口参数包括 `--host`、`--port`、`--reload`、`--upstream-url`、`--local-gpus`、`--worker-host`、`--worker-tier`、`--worker-concurrency`、`--preload-models`、`--admin-api-key`。
 - `--upstream-url` 可重复，用于接入已有 MinerU V1 API base URL。
 - `--local-gpus` 支持 `auto`、`none` 或 GPU CSV，例如 `0,1,2`。
-- 本地 worker 统一启动 `mineru-kit api-server`；`--worker-tier` 默认 `standard`，`--worker-concurrency` 默认 `1`。
-- Router 完整代理 V1 health、models、tiers、uploads、files、parse jobs 与 usage，并提供 `/v1/tasks`、`/v1/file_parse` 便捷接口；不提供旧根路径。
+- 本地 worker 统一启动 `mineru-kit api-server`；`--worker-tier` 是包含较低档位的上限，可选 flash/basic/standard/advanced，默认 standard；`--worker-concurrency` 默认 `1`。
+- Router 提供 V1 health、models、tiers、usage、按 ID 操作 Files，以及 `/v1/tasks` JSON 创建、按 ID 查询/取消、逐文件上传和结果下载；不提供任务或文件列表。
 - Router 只接受显式声明的参数，不再透传未知模型引擎参数；需要额外调优时应部署独立 upstream。
-- uploads、files 与 jobs 的公共路由状态保存在当前进程内，Router 重启后不保证旧公共 ID 继续可用。
+- tasks 与 files 的公共路由状态保存在当前进程内，Router 重启后不保证旧公共 ID 继续可用。
+- `--admin-api-key` 优先于 `MINERU_ROUTER_ADMIN_API_KEY`，未配置时不启用管理接口；管理凭证不下传，解析认证保持原契约。
+- `GET/POST /v1/router/workers` 与 `DELETE /v1/router/workers/{worker_id}` 仅管理本层远程 upstream，包括启动清单；支持接入下层 Router，不管理本地托管 worker。
+- 注销进入 draining，停止新预占，保留已有任务、传输和结果租约；全部引用释放后移除。清单仅当前进程有效，重启恢复启动参数。完整接口与级联示例见 [Router 管理](../api/router.md)。

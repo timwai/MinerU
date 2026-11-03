@@ -69,6 +69,9 @@ ZH_MESSAGES: dict[str, str] = {
     "{label}: {ids}": "{label}: {ids}",
     # ------------------------------------------------------------------ read
     "Document library locator, e.g. doc:ab12cd3/tier:basic/page:4": "文档库定位符,如 doc:ab12cd3/tier:basic/page:4",
+    "Document library locator; page selection supports numbers, rN, ranges, comma-separated pages and all": (
+        "文档库定位符；页选择支持数字、rN、区间、逗号组合和 all"
+    ),
     "Read N pages/blocks before and after the locator": "在定位符前后各读取 N 页/块",
     "Output format: markdown, image": "输出格式: markdown、image",
     "Omit continuation marker from output": "输出中省略续读标记",
@@ -140,6 +143,7 @@ ZH_MESSAGES: dict[str, str] = {
     "File retention: {retention}": "文件保留期: {retention}",
     "{start} - ongoing": "{start} - 进行中",
     "not specified": "未指定",
+    "unlimited": "无限制",
     "{days} day": "{days} 天",
     "{days} days": "{days} 天",
     # ------------------------------------------------------------------ list
@@ -213,11 +217,13 @@ ZH_MESSAGES: dict[str, str] = {
     "Print the next telemetry request body without sending it.": "打印下一次遥测请求体,但不发送。",
     "Enable telemetry.": "启用遥测。",
     "Disable telemetry and clear pending local aggregates.": "禁用遥测并清除待发送的本地聚合数据。",
-    "Flush pending telemetry now when telemetry is enabled (or unset during prerelease).": (
-        "当遥测已启用(或预发布期未设置)时,立即上报待发送遥测。"
-    ),
+    "Flush pending telemetry now when telemetry is enabled.": "当遥测已启用时,立即上报待发送遥测。",
     "never": "从未",
     "state: {state}": "状态(state): {state}",
+    "source: {source}": "来源(source): {source}",
+    "Telemetry preference saved as enabled; MINERU_TELEMETRY_DISABLED still disables this server.": (
+        "已保存开启偏好；MINERU_TELEMETRY_DISABLED 仍禁用当前服务的遥测。"
+    ),
     "installation_id: {id}": "installation_id: {id}",
     "pending_periods: {n}": "待发送周期数: {n}",
     "pending_metrics: {n}": "待发送指标数: {n}",
@@ -395,37 +401,17 @@ ZH_MESSAGES: dict[str, str] = {
     "An Official API Key is optional and enables registered access.": "官方 API Key 为可选项,配置后可启用注册访问。",
     "Manage or create an API Key:": "管理或创建 API Key:",
     "Set the API Key:": "设置 API Key:",
-    # --------------------------------------------------- 遥测首次运行同意文案
-    "Help improve MinerU by sending anonymous, locally aggregated usage and diagnostic data.\n"
-    "\n"
-    "Collected:\n"
-    "    command names, MinerU version, OS, architecture, Python version, install channel,\n"
-    "    coarse CPU/GPU categories, success/failure status, error categories, tiers,\n"
-    "    and performance timing buckets.\n"
-    "\n"
-    "NOT collected:\n"
-    "    document contents, extracted text/images, file names, file paths, raw URLs,\n"
-    "    search queries, prompts, snippets, tracebacks, exception messages, hostnames,\n"
-    "    usernames, account IDs, API keys, or exact CPU/GPU models.\n"
-    "\n"
-    "Press Enter or type Y to enable, or type N to disable.\n"
-    "You can change this later with `mineru telemetry enable` or `mineru telemetry disable`.\n"
-    "Preview what would be sent with `mineru telemetry preview`.": (
-        "帮助改进 MinerU:发送匿名且本地聚合的使用与诊断数据。\n"
-        "\n"
-        "收集内容:\n"
-        "    命令名、MinerU 版本、操作系统、架构、Python 版本、安装渠道、\n"
-        "    粗粒度 CPU/GPU 类别、成功/失败状态、错误类别、档位,以及性能耗时分桶。\n"
-        "\n"
-        "不收集的内容:\n"
-        "    文档内容、提取的文本/图片、文件名、文件路径、原始 URL、搜索词、提示词、\n"
-        "    片段、堆栈、异常消息、主机名、用户名、账号 ID、API 密钥,或精确 CPU/GPU 型号。\n"
-        "\n"
-        "按回车或输入 Y 启用,输入 N 禁用。\n"
-        "之后可通过 `mineru telemetry enable` 或 `mineru telemetry disable` 修改。\n"
-        "使用 `mineru telemetry preview` 预览将发送的内容。"
+    # --------------------------------------------------- 遥测一次性默认开启说明
+    "Doclib telemetry is enabled by default: locally aggregated usage, "
+    "coarse environment categories, and performance metrics.\n"
+    "Document contents, file names and paths, search queries, and API keys are not included.\n"
+    "Inspect data with `mineru telemetry preview`; turn it off with `mineru telemetry disable`.\n"
+    "Set MINERU_TELEMETRY_DISABLED=1 before starting Doclib to disable it from the first startup.": (
+        "Doclib 遥测默认开启，收集本地聚合的使用情况、粗粒度环境类别和性能指标。\n"
+        "不包含文档内容、文件名和路径、搜索词或 API 密钥。\n"
+        "使用 `mineru telemetry preview` 检查数据，使用 `mineru telemetry disable` 关闭。\n"
+        "在启动 Doclib 前设置 MINERU_TELEMETRY_DISABLED=1，可从首次启动就禁用遥测。"
     ),
-    "Enable telemetry?": "启用遥测?",
     # ------------------------------------------------------------- kit 根
     "MinerU Kit — batch parsing and service tools": "MinerU Kit — 批量解析与服务工具",
     "Parse files or directories into markdown, middle JSON, or zip outputs.": (
@@ -460,8 +446,8 @@ ZH_MESSAGES: dict[str, str] = {
     "Gradio is a base dependency; repair the installation with `pip install 'mineru'`.": (
         "Gradio 是基础依赖;请用 `pip install 'mineru'` 修复安装。"
     ),
-    "Gradio >=6.8,<7 is required; upgrade with `pip install --upgrade 'mineru'`.": (
-        "需要 Gradio >=6.8,<7;请用 `pip install --upgrade 'mineru'` 升级。"
+    "Gradio >=6.21,<7 is required; upgrade with `pip install --upgrade 'mineru'`.": (
+        "需要 Gradio >=6.21,<7;请用 `pip install --upgrade 'mineru'` 升级。"
     ),
     "Unsupported API server tier '{tier}'. Supported tiers: {tiers}": "不支持的 API server 档位 '{tier}'。支持的档位: {tiers}",
     "{name} must be greater than zero": "{name} 必须大于零",
@@ -476,7 +462,9 @@ ZH_MESSAGES: dict[str, str] = {
     "Maximum pages per PDF conversion; omitted: unlimited": "PDF 单次转换的最大页数;省略时不限制",
     "Show local examples": "显示本地示例",
     "Expose the Gradio event API": "开放 Gradio 事件 API",
-    "Managed API server capability tier": "托管 API server 的能力档位",
+    "Managed API server tier ceiling: auto, flash, basic, standard, advanced; ignored with --api-url": (
+        "托管 API server 的档位上限：auto、flash、basic、standard、advanced；指定 --api-url 时忽略"
+    ),
     "Managed server job concurrency": "托管服务的任务并发数",
     "Disable managed server image analysis": "禁用托管服务的图像分析",
     "Preload managed server models": "预加载托管服务的模型",
@@ -485,7 +473,13 @@ ZH_MESSAGES: dict[str, str] = {
     "Server host": "服务监听主机",
     "Server port": "服务监听端口",
     "Upload directory": "上传目录",
-    "Server capability tier: flash, basic, or standard": "服务能力档位: flash、basic 或 standard",
+    "Start the synchronous single-file Tasks wrapper service.": "启动单文件同步 Tasks 包装服务。",
+    "Upstream Tasks API base URL": "上游 Tasks API 基础 URL",
+    "Upstream Bearer API key": "上游 Bearer API 密钥",
+    "File parse recovery state directory": "同步解析请求恢复目录",
+    "PDF/image tier ceiling: flash, basic, standard, advanced; or auto": (
+        "PDF/图片档位上限: flash、basic、standard、advanced;或 auto 自动选择"
+    ),
     "Disable Flash tier advertisement and execution": "禁用 Flash 档位的广播与执行",
     "Disable Advanced tier advertisement and execution": "禁用 Advanced 档位的广播与执行",
     "Terminal retention seconds (default 86400; 0 disables collection)": "终态资源保留秒数（默认 86400；0 表示禁用回收）",
@@ -496,6 +490,7 @@ ZH_MESSAGES: dict[str, str] = {
     "Allow URL sources to use plain HTTP": "允许 URL 来源使用明文 HTTP",
     "Initialize VLM client and local Hybrid models at startup": "启动时初始化 VLM 客户端与本地 Hybrid 模型",
     "Optional fixed API key": "可选的固定 API key",
+    "Bearer key enabling Router upstream management APIs": "用于启用 Router upstream 管理 API 的 Bearer key",
     "Remote VLM URL; empty value selects local VLM": "远程 VLM URL;留空选择本地 VLM",
     "Bearer key for the remote VLM server": "远程 VLM 服务的 Bearer key",
     "Remote VLM model name; empty value enables discovery": "远程 VLM 模型名;留空启用自动发现",
@@ -535,6 +530,14 @@ ZH_MESSAGES: dict[str, str] = {
         "mlx_vlm.server 不可用。请安装 'mlx-vlm>=0.7.0,<0.8.0'。"
     ),
     "MLX-VLM is not installed. Install 'mlx-vlm>=0.7.0,<0.8.0'.": "未安装 MLX-VLM。请安装 'mlx-vlm>=0.7.0,<0.8.0'。",
+    # -------------------------------------------------------- kit hardware
+    "Detect recommended tiers or inspect hardware and runtime information.": "检测推荐档位或查看硬件与运行时信息。",
+    "Recommend the API tier ceiling using hardware and applicable OCR calibration.": (
+        "根据硬件和适用的 OCR 校准结果推荐 API 档位上限。"
+    ),
+    "Read hardware, installed versions and runtime diagnostics without calibration.": (
+        "读取硬件、已安装软件版本与运行时诊断信息，不执行校准。"
+    ),
     # ---------------------------------------------------------- kit models
     "Download, inspect, and verify local MinerU models.": "下载、查看与校验本地 MinerU 模型。",
     "Download an explicit repo or the tier resources required by the current backend combination.": (
@@ -578,7 +581,7 @@ ZH_MESSAGES: dict[str, str] = {
     "Existing MinerU V1 API base URL; repeat to add upstreams": "既有的 MinerU V1 API 基础 URL;可重复传入以添加多个上游",
     "Local workers: auto, none, or GPU CSV": "本地 worker: auto、none 或 GPU 列表(CSV)",
     "Host for managed api-server workers": "托管 api-server worker 的主机",
-    "Managed worker tier: flash, basic, standard": "托管 worker 档位: flash、basic、standard",
+    "Managed worker tier ceiling: flash, basic, standard, advanced": "托管 worker 档位上限: flash、basic、standard、advanced",
     "Concurrency per managed worker": "每个托管 worker 的并发数",
     "Preload models in managed workers": "在托管 worker 中预加载模型",
     # -------------------------------------------------------- kit common

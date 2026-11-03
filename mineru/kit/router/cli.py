@@ -28,7 +28,9 @@ def router_cmd(
     ),
     local_gpus: str = typer.Option("auto", "--local-gpus", help=t("Local workers: auto, none, or GPU CSV")),
     worker_host: str = typer.Option("127.0.0.1", "--worker-host", help=t("Host for managed api-server workers")),
-    worker_tier: str = typer.Option("standard", "--worker-tier", help=t("Managed worker tier: flash, basic, standard")),
+    worker_tier: str = typer.Option(
+        "standard", "--worker-tier", help=t("Managed worker tier ceiling: flash, basic, standard, advanced")
+    ),
     worker_concurrency: int = typer.Option(1, "--worker-concurrency", help=t("Concurrency per managed worker")),
     retention_seconds: int | None = typer.Option(
         None,
@@ -38,6 +40,12 @@ def router_cmd(
         help=t("Terminal retention seconds (default 86400; 0 disables collection)"),
     ),
     preload_models: bool = typer.Option(False, "--preload-models", help=t("Preload models in managed workers")),
+    admin_api_key: str | None = typer.Option(
+        None,
+        "--admin-api-key",
+        envvar="MINERU_ROUTER_ADMIN_API_KEY",
+        help=t("Bearer key enabling Router upstream management APIs"),
+    ),
 ) -> None:
     """启动只暴露 MinerU V1 API 的独立 Router 服务。"""
     if worker_tier not in SERVER_TIERS:
@@ -59,6 +67,7 @@ def router_cmd(
             worker_concurrency=worker_concurrency,
             preload_models=preload_models,
             retention_seconds=retention_seconds,
+            admin_api_key=admin_api_key,
         )
     except ValueError as exc:
         exit_with_message("invalid_request", str(exc))

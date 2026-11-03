@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -19,7 +18,7 @@ from PIL import Image
 from reportlab.pdfgen import canvas
 from typer.testing import CliRunner
 
-from mineru.config import VlmConfig, config
+from mineru.config import VlmConfig, get_config
 from mineru.model.vlm.client import get_vlm_predictor
 from mineru.parser import api_server, parse, parse_async
 
@@ -46,9 +45,9 @@ def openai_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_OpenAIServer]:
 
     monkeypatch.delenv("MINERU_VL_API_KEY", raising=False)
     monkeypatch.delenv("MINERU_VL_MODEL_NAME", raising=False)
-    monkeypatch.setattr(config.model, "vlm", VlmConfig())
-    monkeypatch.setattr(config.llm_aided.features, "title_leveling", False)
-    monkeypatch.setattr(config.llm_aided.features, "cross_page_table_cell_merge", False)
+    monkeypatch.setattr(get_config().model, "vlm", VlmConfig())
+    monkeypatch.setattr(get_config().llm_aided.features, "title_leveling", False)
+    monkeypatch.setattr(get_config().llm_aided.features, "cross_page_table_cell_merge", False)
     monkeypatch.setattr(ModelSingleton, "_models", {})
     state = _OpenAIServer()
 
@@ -120,6 +119,29 @@ def openai_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[_OpenAIServer]:
 def _settings(server: _OpenAIServer, **overrides: Any) -> VlmConfig:
     """为模拟服务生成连接配置，允许单个用例覆盖连接字段。"""
     return VlmConfig.model_validate({"server_url": server.url, "api_key": server.api_key, **overrides})
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+def test_remote_inline_text_uses_default_prompt_and_preserves_failures(
+    openai_server: _OpenAIServer, is_async: bool
+) -> None:
+    """真实 HTTP 适配器用文本提示识别切片，并将请求失败交给宿主按片回退。"""
+    predictor, _ = get_vlm_predictor(_settings(openai_server))
+    with Image.new("RGB", (32, 16), "white") as image:
+        if is_async:
+            result = asyncio.run(predictor.aio_batch_recognize_text([image, image]))
+        else:
+            result = predictor.batch_recognize_text([image, image])
+        assert result == ["Remote VLM text", "Remote VLM text"]
+        bodies = [body for _, _, body in openai_server.requests if body is not None]
+        assert len(bodies) == 2
+        for body in bodies:
+            content = body["messages"][-1]["content"]
+            assert [part["text"] for part in content if part["type"] == "text"] == ["\nText Recognition:"]
+        openai_server.chat_status = 400
+        failures = predictor.batch_recognize_text([image, image])
+        assert len(failures) == 2
+        assert all(isinstance(item, Exception) for item in failures)
 
 
 def test_remote_client_protocol_and_cache(openai_server: _OpenAIServer, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,11 +252,18 @@ def test_remote_preload_failure_is_reported(
     """预加载认证失败通过现有健康和能力错误暴露，未预加载时保持懒连接。"""
     monkeypatch.setattr(api_server, "ensure_tier_runtime_dependencies", lambda tier, **kwargs: None)
     settings = _settings(openai_server, api_key="wrong-key")
-    lazy = api_server.create_app(upload_dir=str(tmp_path / "lazy"), vlm_config=settings)
+    lazy = api_server.create_app(
+        tiers=("flash", "basic", "standard", "advanced"), upload_dir=str(tmp_path / "lazy"), vlm_config=settings
+    )
     with TestClient(lazy) as client:
         assert client.get("/v1/health").status_code == 200
         assert openai_server.requests == []
-    preloaded = api_server.create_app(upload_dir=str(tmp_path / "preload"), vlm_config=settings, preload_models=True)
+    preloaded = api_server.create_app(
+        tiers=("flash", "basic", "standard", "advanced"),
+        upload_dir=str(tmp_path / "preload"),
+        vlm_config=settings,
+        preload_models=True,
+    )
     with TestClient(preloaded) as client:
         for endpoint in ("health", "tiers", "models"):
             response = client.get(f"/v1/{endpoint}")
@@ -265,6 +294,7 @@ def hybrid_stub(monkeypatch: pytest.MonkeyPatch) -> None:
         page_vector_geometries: object,
         np_images: object,
         page_snapshots: object = None,
+        recognized_inline_formulas: object = None,
     ) -> list[list[dict[str, Any]]]:
         """保留远程正文并模拟 Hybrid 提供的行框，满足 PDF 文本块校验合同。"""
         for page in blocks:
@@ -298,7 +328,7 @@ def test_python_parse_uses_global_remote_vlm(
     image_input: bool,
 ) -> None:
     """同步及异步入口读取全局 VLM 配置，PDF 和图片转 PDF 均产生真实 Middle JSON。"""
-    monkeypatch.setattr(config.model, "vlm", _settings(openai_server))
+    monkeypatch.setattr(get_config().model, "vlm", _settings(openai_server))
     source = _pdf_input(tmp_path)
     if image_input:
         source = tmp_path / "input.png"
@@ -317,7 +347,7 @@ def test_kit_parse_uses_global_remote_vlm(
     """实际执行 mineru-kit parse 命令，验证全局 VLM 配置进入解析并生成 Markdown 文件。"""
     from mineru.kit.main import app
 
-    monkeypatch.setattr(config.model, "vlm", _settings(openai_server))
+    monkeypatch.setattr(get_config().model, "vlm", _settings(openai_server))
     output = tmp_path / "result.md"
     result = CliRunner().invoke(app, ["parse", str(_pdf_input(tmp_path)), "-o", str(output), "--ocr-mode", "ocr"])
     assert result.exit_code == 0, result.output
@@ -338,40 +368,29 @@ def test_api_job_through_http_vlm_to_middle_json(
     source = _pdf_input(tmp_path)
     app = api_server.create_app(
         upload_dir=str(tmp_path / "api"),
-        allow_local_source=True,
         api_key="inbound-key",
-        no_flash=True,
+        tiers=("basic", "standard", "advanced"),
         vlm_config=_settings(openai_server),
     )
     with TestClient(app, headers={"Authorization": "Bearer inbound-key"}) as client:
-        submitted = client.post(
-            "/v1/parse/jobs",
-            json={
-                "files": [{"source": {"type": "local", "path": str(source)}}],
-                "tier": tier,
-                "ocr_mode": "ocr",
-                "output_formats": ["middle_json"],
-            },
-        )
-        assert submitted.status_code == 202, submitted.text
-        job_id = submitted.json()["job_id"]
-        deadline = time.monotonic() + 15
-        while True:
-            job = client.get(f"/v1/parse/jobs/{job_id}").json()
-            if job["status"] in {"completed", "failed", "partial"}:
-                break
-            assert time.monotonic() < deadline, job
-            time.sleep(0.01)
+        from task_test_utils import submit_task, wait_task
+
+        task = submit_task(client, source, tier=tier, ocr_mode="ocr")
+        job = wait_task(client, task, timeout=15)
         if chat_status != 200:
             assert job["status"] == "failed", job
             assert job["files"][0]["error"]["code"] == "parse_failed"
             return
         assert job["status"] == "completed", job
-        file_id = job["files"][0]["output_files"]["middle_json"]["file_id"]
-        output = client.get(f"/v1/files/{file_id}/content")
+        import io
+        import zipfile
+
+        output = client.get(job["files"][0]["result_url"])
         assert output.status_code == 200
-        assert output.json()["extensions"]["mineru"]["tier"] == tier
-        assert "Remote VLM text" in output.text
+        with zipfile.ZipFile(io.BytesIO(output.content)) as archive:
+            middle_text = archive.read("middle_json.json").decode()
+        assert json.loads(middle_text)["extensions"]["mineru"]["tier"] == tier
+        assert "Remote VLM text" in middle_text
         assert all(request[1] == "Bearer test-key" for request in openai_server.requests)
 
 
@@ -416,7 +435,7 @@ def test_remote_parse_inference_progress(
     from mineru.model.vlm import runtime
 
     monkeypatch.setattr(runtime, "MinerUClient", partial(MinerUClient, use_tqdm=enabled))
-    monkeypatch.setattr(config.model, "vlm", _settings(openai_server))
+    monkeypatch.setattr(get_config().model, "vlm", _settings(openai_server))
     source = _pdf_input(tmp_path)
     result = (
         asyncio.run(parse_async(source, tier=tier, ocr_mode="ocr")) if async_mode else parse(source, tier=tier, ocr_mode="ocr")
@@ -478,7 +497,7 @@ def test_standard_progress_label_survives_pdf_mode_routing(
     """TXT/OCR 及 auto 的两个分类分支均保留同名推理进度，并走真实 PDF 和 HTTP 流程。"""
     from mineru.backend.analysis.pdf import pipeline
 
-    monkeypatch.setattr(config.model, "vlm", _settings(openai_server))
+    monkeypatch.setattr(get_config().model, "vlm", _settings(openai_server))
     monkeypatch.setattr(pipeline.PDFDocument, "classify", lambda self: resolved_mode)
     context = hybrid_runtime.HybridLocalModelContextSingleton().get_model()
     # 公式块在 TXT 下仍需 VLM 抽取，避免测试被原生正文跳过逻辑短路。

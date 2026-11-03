@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 
-
+import math
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -33,6 +33,7 @@ from .native import (
     __replace_unicode,
     _clear_post_ocr_fallback,
     _is_supported_rotation,
+    _replace_private_use_chars,
     _restore_post_ocr_fallback,
     txt_spans_extract,
 )
@@ -120,8 +121,15 @@ def _build_page_text_formula_spans(
             _AnalyzeSpan(
                 type=ContentType.INLINE_EQUATION,
                 bbox=bbox,
-                content=str(formula.get("latex", "") or "").strip(),
+                content=str(
+                    formula.get("content", "")
+                    if formula.get("content_format") == "text_with_inline_math"
+                    else formula.get("latex", "") or ""
+                ).strip(),
                 score=float(formula.get("score", 0.0) or 0.0),
+                content_format=(
+                    "text_with_inline_math" if formula.get("content_format") == "text_with_inline_math" else "default"
+                ),
             )
         )
 
@@ -253,6 +261,99 @@ def _group_page_spans_by_block(
     return block_lines
 
 
+def _recover_native_drop_caps(
+    page_model_list: list[dict[str, Any]],
+    block_lines: dict[int, list[_AnalyzeLine]],
+    page_size: tuple[float, float],
+    geometry: PDFPageTextGeometry | None,
+    excluded_regions: list[BBox],
+) -> None:
+    """仅补回正文首行紧邻且未被认领的大号首字，组行完成后更新几何避免串行。"""
+    if geometry is None:
+        return
+    claimed: set[int] = set()
+    all_spans = [span for lines in block_lines.values() for line in lines for span in line.spans]
+    # 先按实际字形高度筛选少量候选，普通页面不为每个正文块重扫全部字符。
+    candidate_positions: dict[str, list[int]] = {}
+    for position in range(1, len(geometry.chars)):
+        cap, following = geometry.chars[position - 1 : position + 1]
+        cap_box = geometry.tight_bboxes.get(cap.get("char_idx"))
+        next_box = geometry.tight_bboxes.get(following.get("char_idx"))
+        if cap_box is not None and next_box is not None and next_box[3] > next_box[1]:
+            if cap_box[3] - cap_box[1] >= 1.8 * (next_box[3] - next_box[1]):
+                candidate_positions.setdefault(str(following.get("char", "")), []).append(position)
+    for block_index, lines in block_lines.items():
+        if not lines or page_model_list[block_index].get("type") != BlockType.TEXT:
+            continue
+        first_line = lines[0]
+        if not first_line.spans or first_line.spans[0].type != ContentType.TEXT:
+            continue
+        first_span = first_line.spans[0]
+        if not first_span.content or first_span.image is not None or not first_span.metadata.get("_native_tight_spacing", True):
+            continue
+        block_bbox = _bbox_to_pixel_bbox(page_model_list[block_index].get("bbox"), page_size)
+        if block_bbox is None:
+            continue
+        for position in candidate_positions.get(first_span.content[0], []):
+            following = geometry.chars[position]
+            cap = geometry.chars[position - 1]
+            cap_text = str(cap.get("char", ""))
+            cap_index, next_index = cap.get("char_idx"), following.get("char_idx")
+            if (
+                len(cap_text) != 1
+                or not cap_text.isascii()
+                or not cap_text.isalpha()
+                or cap_index is None
+                or next_index != cap_index + 1
+                or cap_index in claimed
+                or cap.get("visible") is False
+                or cap.get("text_render_mode") == 3
+            ):
+                continue
+            cap_bbox = geometry.tight_bboxes.get(cap_index)
+            next_bbox = geometry.tight_bboxes.get(next_index)
+            if cap_bbox is None or next_bbox is None or not all(math.isfinite(value) for value in (*cap_bbox, *next_bbox)):
+                continue
+            angles = (float(cap.get("writing_angle", 0)), float(following.get("writing_angle", 0)))
+            if any(not math.isfinite(angle) or abs(math.degrees(angle)) > 0.1 for angle in angles):
+                continue
+            height = next_bbox[3] - next_bbox[1]
+            if (
+                height <= 0
+                or cap_bbox[3] - cap_bbox[1] < 1.8 * height
+                or abs(cap_bbox[1] - next_bbox[1]) > 0.25 * height
+                or not 0 <= next_bbox[0] - cap_bbox[2] <= 0.5 * height
+                or not 0 <= next_bbox[0] - first_span.bbox[0] <= 0.5 * height
+                or not first_span.bbox[1] <= (next_bbox[1] + next_bbox[3]) / 2 <= first_span.bbox[3]
+                or not (
+                    block_bbox[0] <= cap_bbox[0] < cap_bbox[2] <= block_bbox[2]
+                    and block_bbox[1] <= cap_bbox[1] < cap_bbox[3] <= block_bbox[3]
+                )
+            ):
+                continue
+            center_x, center_y = (cap_bbox[0] + cap_bbox[2]) / 2, (cap_bbox[1] + cap_bbox[3]) / 2
+            if any(box[0] <= center_x <= box[2] and box[1] <= center_y <= box[3] for box in excluded_regions):
+                continue
+            # 已由其他行、公式或相邻栏框完整覆盖的首字不能再补入当前正文。
+            if any(span.bbox[0] <= center_x <= span.bbox[2] and span.bbox[1] <= center_y <= span.bbox[3] for span in all_spans):
+                continue
+            first_span.content = cap_text + first_span.content
+            first_span.bbox = (
+                min(first_span.bbox[0], cap_bbox[0]),
+                min(first_span.bbox[1], cap_bbox[1]),
+                max(first_span.bbox[2], cap_bbox[2]),
+                max(first_span.bbox[3], cap_bbox[3]),
+            )
+            first_line.bbox = (
+                min(first_line.bbox[0], cap_bbox[0]),
+                min(first_line.bbox[1], cap_bbox[1]),
+                max(first_line.bbox[2], cap_bbox[2]),
+                max(first_line.bbox[3], cap_bbox[3]),
+            )
+            claimed.add(cap_index)
+            break
+
+
 def _apply_window_post_ocr(
     local_model_context: HybridLocalModelContext,
     page_block_lines_list: list[dict[int, list[_AnalyzeLine]]],
@@ -306,12 +407,21 @@ def _line_content_parts(line: _AnalyzeLine) -> list[tuple[str, str]]:
             content = str(span.content or "").strip()
         elif span.type == ContentType.INLINE_EQUATION:
             latex = str(span.content or "").strip()
-            content = f"\\({latex}\\)" if latex else ""
+            content = latex if span.content_format == "text_with_inline_math" else (f"\\({latex}\\)" if latex else "")
         else:
             continue
         if content:
             parts.append((span.type, content))
     return parts
+
+
+def _replace_residual_private_use_text(block_lines: dict[int, list[_AnalyzeLine]]) -> None:
+    """后置 OCR 及失败恢复完成后清理正文 PUA，避免提前替换影响检测或紧排。"""
+    for lines in block_lines.values():
+        for line in lines:
+            for span in line.spans:
+                if span.type == ContentType.TEXT:
+                    span.content = _replace_private_use_chars(span.content)
 
 
 def _lines_to_block_content(lines: list[_AnalyzeLine], block_type: str) -> str:
@@ -510,6 +620,10 @@ def _fill_window_block_content_and_lines(
             page_size,
             target_block_types,
         )
+        if parse_mode == "txt":
+            _recover_native_drop_caps(
+                page_model_list, block_lines, page_size, evidence.geometry, inline_math_regions + table_regions
+            )
         page_block_line_results.append(
             (
                 page_model_list,
@@ -531,6 +645,8 @@ def _fill_window_block_content_and_lines(
         page_size,
         evidence,
     ) in page_block_line_results:
+        if parse_mode == "txt":
+            _replace_residual_private_use_text(block_lines)
         _apply_block_content_and_line_metadata(
             page_model_list,
             block_lines,

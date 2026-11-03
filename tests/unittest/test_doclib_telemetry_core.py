@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from doclib_test_utils import create_doclib_server
+
+from mineru.doclib.services.parse_execution_svc import ParseExecutionService
+
+from doclib_test_utils import create_parse_services
+
 import asyncio
 from types import SimpleNamespace
 
 from mineru.doclib.core.db import DatabaseManager
-from mineru.doclib.server import DoclibServer
 from mineru.doclib.services.config_svc import ConfigService
-from mineru.doclib.services.parse_svc import ParseService
+
 from mineru.doclib.services.scan_svc import ScanService, _ScanCounters
 from mineru.doclib.telemetry import (
     TelemetryContext,
@@ -19,7 +24,7 @@ from mineru.doclib.telemetry import (
     results_bucket,
     set_telemetry_context,
 )
-from mineru.doclib.telemetry.constants import CONSENT_DISABLED, CONSENT_UNSET
+from mineru.doclib.telemetry.constants import TELEMETRY_DISABLED, TELEMETRY_ENABLED
 from mineru.doclib.telemetry.payload import build_period_payload, compact_json_bytes, dimensions_hash
 from mineru.doclib.telemetry.transport import signed_headers
 from mineru.doclib.telemetry import service as telemetry_service_module
@@ -44,7 +49,7 @@ def test_bucket_helpers_use_documented_boundaries() -> None:
     assert results_bucket(101) == "gt_100"
 
 
-def test_store_initializes_installation_id_and_consent_state(tmp_path) -> None:
+def test_store_initializes_installation_id_and_telemetry_state(tmp_path) -> None:
     async def _run() -> None:
         db = DatabaseManager(str(tmp_path / "doclib.db"))
         await db.initialize()
@@ -54,7 +59,7 @@ def test_store_initializes_installation_id_and_consent_state(tmp_path) -> None:
         installation_id = await store.installation_id()
         assert installation_id.startswith("inst_")
         assert await store.installation_id() == installation_id
-        assert await store.consent_state() == CONSENT_UNSET
+        assert await store.telemetry_state() == TELEMETRY_ENABLED
 
     asyncio.run(_run())
 
@@ -116,7 +121,7 @@ def test_service_records_aggregates_and_uses_context_dimensions(tmp_path) -> Non
     asyncio.run(_run())
 
 
-def test_disabled_consent_clears_and_blocks_aggregates(tmp_path) -> None:
+def test_disabled_state_clears_and_blocks_aggregates(tmp_path) -> None:
     async def _run() -> None:
         db = DatabaseManager(str(tmp_path / "doclib.db"))
         await db.initialize()
@@ -127,7 +132,7 @@ def test_disabled_consent_clears_and_blocks_aggregates(tmp_path) -> None:
         await service.record_count("search.request.count")
         assert await store.list_periods_for_flush()
 
-        await store.set_consent_state(CONSENT_DISABLED)
+        await store.set_telemetry_state(TELEMETRY_DISABLED)
         assert await store.list_periods_for_flush() == []
 
         await service.record_count("search.request.count")
@@ -200,7 +205,7 @@ def test_flush_once_sends_enabled_period_and_deletes_on_success(monkeypatch, tmp
         store = TelemetryStore(db)
         service = TelemetryService(store)
         await service.initialize()
-        await store.set_consent_state("enabled")
+        await store.set_telemetry_state("enabled")
         await service.record_count("search.request.count", timestamp_ms=1_700_000_000_000)
 
         result = await service.flush_once()
@@ -216,7 +221,7 @@ def test_flush_once_sends_enabled_period_and_deletes_on_success(monkeypatch, tmp
     asyncio.run(_run())
 
 
-def test_flush_once_sends_unset_period_during_alpha(monkeypatch, tmp_path) -> None:
+def test_flush_once_sends_default_enabled_period(monkeypatch, tmp_path) -> None:
     async def _run() -> None:
         captured: list[dict] = []
 
@@ -253,7 +258,7 @@ def test_flush_once_keeps_period_on_retry(monkeypatch, tmp_path) -> None:
         store = TelemetryStore(db)
         service = TelemetryService(store)
         await service.initialize()
-        await store.set_consent_state("enabled")
+        await store.set_telemetry_state("enabled")
         await service.record_count("find.request.count", timestamp_ms=1_700_000_000_000)
 
         result = await service.flush_once()
@@ -285,7 +290,7 @@ def test_parse_route_records_request_finished_and_duration_metrics(tmp_path) -> 
         store = TelemetryStore(db)
         telemetry = TelemetryService(store)
         await telemetry.initialize()
-        server = DoclibServer(SimpleNamespace(parse_svc=_ParseService(), telemetry_svc=telemetry))
+        server = create_doclib_server(SimpleNamespace(parse_queue_svc=_ParseService(), telemetry_svc=telemetry))
 
         await server.ensure_parse(ParseRequest(path="/tmp/a.pdf", tier="standard"))
         body = await telemetry.preview_body()
@@ -316,7 +321,7 @@ def test_search_route_records_result_bucket_metrics(tmp_path) -> None:
         store = TelemetryStore(db)
         telemetry = TelemetryService(store)
         await telemetry.initialize()
-        server = DoclibServer(SimpleNamespace(search_svc=_SearchService(), telemetry_svc=telemetry))
+        server = create_doclib_server(SimpleNamespace(search_svc=_SearchService(), telemetry_svc=telemetry))
 
         await server.search("needle")
         body = await telemetry.preview_body()
@@ -361,7 +366,7 @@ def test_parse_service_process_doc_records_task_metrics(tmp_path) -> None:
             """测试替身补齐 ParseResult 图片接口，保持成功路径契约完整。"""
             return {}
 
-    class _ParseService(ParseService):
+    class _ParseService(ParseExecutionService):
         async def _parse_via_local(self, file_row, tier, page_range):
             return _Result()
 
@@ -372,13 +377,14 @@ def test_parse_service_process_doc_records_task_metrics(tmp_path) -> None:
         telemetry = TelemetryService(store)
         await telemetry.initialize()
         config_svc = ConfigService(db)
-        parse_svc = _ParseService(
+        parse_svc = create_parse_services(
             db,
             _Fts(),
             config_svc,
             str(tmp_path),
             parse_lock_timeout_sec=30,
             telemetry_svc=telemetry,
+            execution_type=_ParseService,
         )
         now = 1_700_000_000_000
         (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4\n")
@@ -398,7 +404,7 @@ def test_parse_service_process_doc_records_task_metrics(tmp_path) -> None:
         )
         task = await db.fetchone("SELECT * FROM parses WHERE sha256=?", ("sha",))
 
-        assert await parse_svc.process_doc(task)
+        assert await parse_svc.execution.process_doc(task)
         body = await telemetry.preview_body()
         names = {metric["name"] for metric in body["metrics"]}
 
@@ -437,8 +443,7 @@ def test_scan_service_process_scan_records_task_metrics(tmp_path) -> None:
         )
         now = 1_700_000_000_000
         await db.execute(
-            "INSERT INTO scans (path, kind, source, status, started_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scans (path, kind, source, status, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(tmp_path), "manual", "cli", "running", now, now, now),
         )
         task = await db.fetchone("SELECT * FROM scans LIMIT 1")
@@ -460,7 +465,7 @@ def test_parse_wait_observation_uses_parse_rows_for_tier_and_pages_bucket(tmp_pa
         store = TelemetryStore(db)
         telemetry = TelemetryService(store)
         await telemetry.initialize()
-        server = DoclibServer(SimpleNamespace(db=db, telemetry_svc=telemetry))
+        server = create_doclib_server(SimpleNamespace(db=db, telemetry_svc=telemetry))
         now = 1_700_000_000_000
         await db.execute(
             "INSERT INTO docs (sha256, short_id, size_bytes, file_type, page_count, first_seen_at, updated_at) "

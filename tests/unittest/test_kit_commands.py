@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import sys
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 import typer
@@ -23,6 +24,7 @@ from mineru.kit.main import app
 from mineru.kit.vlm_server import mlx_vlm_server
 from mineru.parser.base import ParseResult
 from mineru.model.registry import MODEL_COMPLETE_MARKER
+from mineru.types import Tier
 from mineru.version import __version__
 
 runner = CliRunner()
@@ -32,9 +34,16 @@ _REMOVED_DISABLE_FORMULA_OPTION = "--disable-" + "formula"
 
 
 def test_kit_main_configures_standard_streams_before_running_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """控制台入口先设置编码，再把日志初始化标记交给实际命令。"""
     calls: list[str] = []
+
+    def run_app(*, obj: kit_main.KitContext) -> None:
+        """检查仅控制台入口启用进程日志初始化。"""
+        assert obj.configure_logging
+        calls.append("app")
+
     monkeypatch.setattr(kit_main, "configure_standard_streams", lambda: calls.append("configure"))
-    monkeypatch.setattr(kit_main, "app", lambda: calls.append("app"))
+    monkeypatch.setattr(kit_main, "app", run_app)
 
     kit_main.main()
 
@@ -153,7 +162,8 @@ def test_standalone_vlm_main_configures_streams_and_forwards_extra_args(monkeypa
     monkeypatch.setattr(vlm_server, "configure_standard_streams", lambda: calls.append("configure"))
     monkeypatch.setattr(vlm_server, "vlm_server_cmd", _record_command)
     code = _invoke_standalone_command(monkeypatch, vlm_server.main, "mineru-openai-server", ["--port", "30000"])
-    kit_command = next(command for command in app.registered_commands if command.name == "vlm-server")
+    root_command = get_command(app)
+    _, kit_command, _ = root_command.resolve_command(typer.Context(root_command), ["vlm-server"])
 
     assert code == 0
     assert calls == ["configure", ["--port", "30000"]]
@@ -163,7 +173,7 @@ def test_standalone_vlm_main_configures_streams_and_forwards_extra_args(monkeypa
 @pytest.mark.parametrize(
     ("script", "entrypoint", "expected_options"),
     [
-        ("mineru-webui", webui.main, ("--api-url", "--api-server-tier")),
+        ("mineru-webui", webui.main, ("--api-url", "--tier")),
         ("mineru-openai-server", vlm_server.main, ("--engine",)),
         (
             "mineru-models-download",
@@ -173,7 +183,7 @@ def test_standalone_vlm_main_configures_streams_and_forwards_extra_args(monkeypa
         (
             "mineru-api",
             api_server.main,
-            ("--host", "--port", "--tier", "--no-flash", "--no-advanced", "--preload-models"),
+            ("--host", "--port", "--tier", "--preload-models"),
         ),
     ],
 )
@@ -209,8 +219,6 @@ def test_standalone_command_help(
             "18000",
             "--tier",
             "basic",
-            "--no-flash",
-            "--no-advanced",
             "--preload-models",
         ],
     ],
@@ -499,7 +507,7 @@ def test_standalone_vlm_mlx_matches_kit(monkeypatch: pytest.MonkeyPatch) -> None
     ("script", "entrypoint", "args", "prefix", "exit_code"),
     [
         ("mineru-api", api_server.main, ["--backend", "hybrid-engine"], ["api-server"], 2),
-        ("mineru-api", api_server.main, ["--tier", "advanced"], ["api-server"], 1),
+        ("mineru-api", api_server.main, ["--tiers", "advanced"], ["api-server"], 2),
         ("mineru-models-download", models.download_main, [], ["models", "download"], 1),
         ("mineru-models-download", models.download_main, ["--tier", "flash"], ["models", "download"], 1),
         ("mineru-openai-server", vlm_server.main, ["--engine", "sglang"], ["vlm-server"], 1),
@@ -533,23 +541,29 @@ def test_kit_root_and_models_help() -> None:
     assert "version" in result.output
 
 
-def test_top_level_commands_register_implementation_callbacks_directly() -> None:
-    callbacks = {command.name: command.callback for command in app.registered_commands}
-
-    assert callbacks["parse"] is parse.parse_cmd
-    assert callbacks["webui"] is webui.webui_cmd
-    assert callbacks["api-server"] is api_server.api_server_cmd
-    assert callbacks["vlm-server"] is vlm_server.vlm_server_cmd
-    assert callbacks["router"] is router.router_cmd
-    assert callbacks["version"] is version_cmd
+def test_selected_commands_use_original_implementation_callbacks() -> None:
+    """惰性加载后仍直接使用原始函数签名和回调，不以通用参数透传替代。"""
+    root_command = get_command(app)
+    callbacks = {
+        "parse": parse.parse_cmd,
+        "webui": webui.webui_cmd,
+        "api-server": api_server.api_server_cmd,
+        "vlm-server": vlm_server.vlm_server_cmd,
+        "router": router.router_cmd,
+        "version": version_cmd,
+    }
+    for name, callback in callbacks.items():
+        _, selected, remaining = root_command.resolve_command(typer.Context(root_command), [name])
+        assert remaining == []
+        assert inspect.unwrap(selected.callback) is callback
 
 
 @pytest.mark.parametrize(
     ("command", "expected_options"),
     [
         ("parse", ("--output", "--format", "--tier")),
-        ("webui", ("--api-url", "--server-name", "--api-server-tier")),
-        ("api-server", ("--host", "--port", "--tier", "--no-flash", "--no-advanced", "--preload-models")),
+        ("webui", ("--api-url", "--server-name", "--tier")),
+        ("api-server", ("--host", "--port", "--tier", "--preload-models")),
         ("vlm-server", ("--engine",)),
         ("router", ("--host", "--upstream-url", "--local-gpus")),
         ("version", ("--json",)),
@@ -579,9 +593,11 @@ def test_kit_root_commands_keep_product_order() -> None:
         "parse",
         "webui",
         "api-server",
+        "file-parse-server",
         "vlm-server",
         "router",
         "models",
+        "hardware",
         "version",
     ]
 
@@ -675,8 +691,8 @@ def test_router_startup_with_no_servers_fails_health_check() -> None:
 
 
 def test_models_download_tier_basic(monkeypatch: Any) -> None:
-    monkeypatch.setattr(models.config.model, "small_backend", "torch")
-    monkeypatch.setattr(models.config.model.vlm, "engine", "vllm")
+    monkeypatch.setattr(models.get_config().model, "small_backend", "torch")
+    monkeypatch.setattr(models.get_config().model.vlm, "engine", "vllm")
     captured: list[str] = []
 
     def fake_download_model_repo(repo: Any, *, source: str | None = None, local_as_auto: bool = False) -> Path:
@@ -693,8 +709,8 @@ def test_models_download_tier_basic(monkeypatch: Any) -> None:
 
 
 def test_models_download_tier_standard(monkeypatch: Any) -> None:
-    monkeypatch.setattr(models.config.model, "small_backend", "torch")
-    monkeypatch.setattr(models.config.model.vlm, "engine", "vllm")
+    monkeypatch.setattr(models.get_config().model, "small_backend", "torch")
+    monkeypatch.setattr(models.get_config().model.vlm, "engine", "vllm")
     captured: list[str] = []
 
     def fake_download_model_repo(repo: Any, *, source: str | None = None, local_as_auto: bool = False) -> Path:
@@ -749,9 +765,9 @@ def test_models_download_repo_uses_explicit_source(monkeypatch: Any) -> None:
 
 def test_models_show_and_verify(tmp_path: Path, monkeypatch: Any) -> None:
     base_dir = tmp_path / "models"
-    monkeypatch.setattr(models.config.model, "base_dir", str(base_dir))
-    monkeypatch.setattr(models.config.model, "small_backend", "torch")
-    monkeypatch.setattr(models.config.model.vlm, "engine", "vllm")
+    monkeypatch.setattr(models.get_config().model, "base_dir", str(base_dir))
+    monkeypatch.setattr(models.get_config().model, "small_backend", "torch")
+    monkeypatch.setattr(models.get_config().model.vlm, "engine", "vllm")
     for repo in models.MODEL_REPOS:
         if repo.download_mode == "full":
             repo.local_dir().mkdir(parents=True, exist_ok=True)
@@ -827,7 +843,8 @@ def test_kit_commands_do_not_expose_formula_table_switches() -> None:
         assert _REMOVED_DISABLE_FORMULA_OPTION not in output
 
 
-def test_api_server_forwards_single_tier_and_disabled_tiers(monkeypatch: Any) -> None:
+def test_api_server_forwards_explicit_tier_list(monkeypatch: Any) -> None:
+    """精确列表原样转发，不再构造旧的禁用开关。"""
     seen: dict[str, Any] = {}
 
     def _fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
@@ -840,24 +857,25 @@ def test_api_server_forwards_single_tier_and_disabled_tiers(monkeypatch: Any) ->
 
     result = runner.invoke(
         app,
-        ["api-server", "--tier", "standard", "--no-flash", "--no-advanced", "--preload-models"],
+        ["api-server", "--tier", "standard", "--preload-models"],
     )
 
     assert result.exit_code == 0
     assert seen["prog_name"] == "mineru-kit api-server"
     assert seen["standalone_mode"] is False
     assert [seen["args"][index + 1] for index, item in enumerate(seen["args"]) if item == "--tier"] == ["standard"]
-    assert "--no-flash" in seen["args"]
-    assert "--no-advanced" in seen["args"]
+    assert "--no-flash" not in seen["args"]
+    assert "--no-advanced" not in seen["args"]
     assert "--preload-models" in seen["args"]
     assert "--ocr-mode" not in seen["args"]
 
 
-def test_api_server_without_tier_lets_parser_api_apply_standard_default(monkeypatch: Any) -> None:
+def test_api_server_without_tiers_forwards_auto(monkeypatch: Any) -> None:
+    """省略启动集合时转发 auto，交由服务进行硬件推荐。"""
     seen: dict[str, Any] = {}
 
     def _fake_main(*, args: list[str], prog_name: str, standalone_mode: bool) -> None:
-        """记录 mineru-kit api-server 默认参数，由底层应用 Standard 能力默认值。"""
+        """记录 mineru-kit api-server 默认参数，由底层应用硬件推荐集合。"""
         seen["args"] = args
         seen["prog_name"] = prog_name
         seen["standalone_mode"] = standalone_mode
@@ -869,24 +887,27 @@ def test_api_server_without_tier_lets_parser_api_apply_standard_default(monkeypa
     assert result.exit_code == 0
     assert seen["prog_name"] == "mineru-kit api-server"
     assert seen["standalone_mode"] is False
-    assert "--tier" not in seen["args"]
+    assert seen["args"][seen["args"].index("--tier") + 1] == "auto"
+    assert "--tiers" not in seen["args"]
     assert "--no-flash" not in seen["args"]
     assert "--no-advanced" not in seen["args"]
     assert "--preload-models" not in seen["args"]
 
 
-def test_api_server_rejects_advanced_startup_tier() -> None:
-    result = runner.invoke(app, ["api-server", "--tier", "advanced"])
+def test_api_server_rejects_removed_tiers_option() -> None:
+    """旧单值 API 启动参数明确报错。"""
+    result = runner.invoke(app, ["api-server", "--tiers", "advanced"])
 
-    assert result.exit_code == 1
-    assert "Unsupported server tier 'advanced'" in result.output
+    assert result.exit_code == 2
+    assert "No such option" in result.output
 
 
-def test_api_server_rejects_flash_no_flash_conflict() -> None:
+def test_api_server_rejects_removed_disable_options() -> None:
+    """旧禁用参数不再构成可接受的 API 启动配置。"""
     result = runner.invoke(app, ["api-server", "--tier", "flash", "--no-flash"])
 
-    assert result.exit_code == 1
-    assert "--tier flash cannot be combined with --no-flash" in result.output
+    assert result.exit_code == 2
+    assert "No such option" in result.output
 
 
 def test_api_server_rejects_removed_language_option() -> None:
@@ -1150,6 +1171,87 @@ def test_parse_rejects_removed_backend_option(backend: str, tmp_path: Path) -> N
     assert "No such option: --backend" in " ".join(result.output.split())
 
 
+def _csv_input_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, form: str) -> str:
+    """构造相同 CSV 的多种真实路径，从工作子目录调用 CLI。"""
+    work = tmp_path / "work"
+    (tmp_path / "in").mkdir()
+    (work / ".data").mkdir(parents=True)
+    for path in (tmp_path / "in/t.csv", work / "t.csv", work / ".data/t.csv", work / ".t.csv"):
+        path.write_text("name,age\nAlice,30\n", encoding="utf-8")
+    monkeypatch.chdir(work)
+    return {
+        "relative": "t.csv",
+        "parent": "../in/t.csv",
+        "hidden-directory": ".data/t.csv",
+        "hidden-file": ".t.csv",
+        "absolute": str(work / "t.csv"),
+    }[form]
+
+
+@pytest.mark.parametrize("form", ["relative", "parent", "hidden-directory", "hidden-file", "absolute"])
+@pytest.mark.parametrize("tier", ["basic", "standard", "advanced"])
+def test_parse_rejects_single_csv_quality_tier_before_parsing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, form: str, tier: str
+) -> None:
+    """同一 CSV 不因路径写法而绕过单文件质量档位校验。"""
+    source = _csv_input_path(tmp_path, monkeypatch, form)
+
+    def unexpected_parse(*args: Any, **kwargs: Any) -> ParseResult:
+        """任何到达解析器的调用都说明 CLI 漏掉了前置校验。"""
+        pytest.fail("invalid single-file tier must be rejected before parsing")
+
+    monkeypatch.setattr(parse, "local_parse", unexpected_parse)
+    output = tmp_path / "result.json"
+    result = runner.invoke(app, ["parse", source, "--tier", tier, "-f", "middle_json", "-o", str(output)])
+
+    assert result.exit_code == 1
+    assert f"Tier '{tier}' is only supported for PDF and image files" in " ".join(result.output.split())
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("form", ["relative", "parent", "hidden-directory", "hidden-file", "absolute"])
+@pytest.mark.parametrize("tier", [None, "flash"])
+def test_parse_csv_paths_produce_real_flash_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, form: str, tier: str | None
+) -> None:
+    """省略 tier 或显式 Flash 时，各种路径都生成可读的真实 CSV 产物。"""
+    source = _csv_input_path(tmp_path, monkeypatch, form)
+    output = tmp_path / "result.json"
+    arguments = ["parse", source, "-f", "middle_json", "-o", str(output)]
+    if tier is not None:
+        arguments.extend(["--tier", tier])
+    result = runner.invoke(app, arguments)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["extensions"]["mineru"]["tier"] == "flash"
+    assert "Alice" in json.dumps(payload["pages"])
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_parse_csv_batch_paths_normalize_tier_before_parsing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, directory: bool
+) -> None:
+    """批量和目录输入仍在 CLI 边界将原生文件归一为 Flash。"""
+    _csv_input_path(tmp_path, monkeypatch, "parent")
+    original = parse.local_parse
+    calls: list[Tier] = []
+
+    def record_parse(
+        path: Path, *, tier: Tier, ocr_mode: Literal["auto", "txt", "ocr"], image_analysis: bool, page_range: str
+    ) -> ParseResult:
+        """记录 CLI 实际传入的档位，并保留真实 CSV 解析。"""
+        calls.append(tier)
+        return original(path, tier=tier, ocr_mode=ocr_mode, image_analysis=image_analysis, page_range=page_range)
+
+    monkeypatch.setattr(parse, "local_parse", record_parse)
+    inputs = [".data"] if directory else ["../in/t.csv", ".t.csv"]
+    result = runner.invoke(app, ["parse", *inputs, "--tier", "advanced", "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["flash"] * len(inputs)
+
+
 def test_parse_rejects_single_office_input_with_quality_tier(monkeypatch: Any, tmp_path: Path) -> None:
     source = tmp_path / "demo.docx"
     output = tmp_path / "out.md"
@@ -1225,11 +1327,13 @@ def test_parse_remote_requests_image_cache(monkeypatch: Any, tmp_path: Path) -> 
             api_key: str | None,
             tier: str | None,
             include_images: bool,
+            ocr_mode: str,
         ) -> None:
             seen["api_url"] = api_url
             seen["api_key"] = api_key
             seen["tier"] = tier
             seen["include_images"] = include_images
+            seen["ocr_mode"] = ocr_mode
 
         def parse(self, path: Path, *, page_range: str) -> _Result:
             seen["path"] = path
@@ -1263,6 +1367,7 @@ def test_parse_remote_requests_image_cache(monkeypatch: Any, tmp_path: Path) -> 
         "api_key": "test-key",
         "tier": "standard",
         "include_images": True,
+        "ocr_mode": "auto",
         "path": source,
         "page_range": "1",
     }
@@ -1378,9 +1483,9 @@ def test_models_download_repo_ignores_backend_options(monkeypatch: Any) -> None:
 
 def test_models_show_displays_backend_fields(tmp_path: Path, monkeypatch: Any) -> None:
     base_dir = tmp_path / "models"
-    monkeypatch.setattr(models.config.model, "base_dir", str(base_dir))
-    monkeypatch.setattr(models.config.model, "small_backend", "torch")
-    monkeypatch.setattr(models.config.model.vlm, "engine", "vllm")
+    monkeypatch.setattr(models.get_config().model, "base_dir", str(base_dir))
+    monkeypatch.setattr(models.get_config().model, "small_backend", "torch")
+    monkeypatch.setattr(models.get_config().model.vlm, "engine", "vllm")
 
     result = runner.invoke(app, ["models", "show"])
 
@@ -1394,9 +1499,9 @@ def test_models_show_displays_backend_fields(tmp_path: Path, monkeypatch: Any) -
 def test_models_show_with_onnx_backend_filter(tmp_path: Path, monkeypatch: Any) -> None:
     """显式 ONNX 覆盖当前命令的小模型选择，不修改全局配置。"""
     base_dir = tmp_path / "models"
-    monkeypatch.setattr(models.config.model, "base_dir", str(base_dir))
-    monkeypatch.setattr(models.config.model, "small_backend", "torch")
-    monkeypatch.setattr(models.config.model.vlm, "engine", "vllm")
+    monkeypatch.setattr(models.get_config().model, "base_dir", str(base_dir))
+    monkeypatch.setattr(models.get_config().model, "small_backend", "torch")
+    monkeypatch.setattr(models.get_config().model.vlm, "engine", "vllm")
 
     result = runner.invoke(app, ["models", "show", "--small-backend", "onnx", "--vlm-engine", "llama-cpp"])
 
@@ -1416,9 +1521,9 @@ def test_models_show_rejects_invalid_small_backend() -> None:
 def test_models_verify_filters_by_effective_backends(tmp_path: Path, monkeypatch: Any) -> None:
     """默认校验只检查当前 Torch 与 VLM 引擎实际需要的仓库。"""
     base_dir = tmp_path / "models"
-    monkeypatch.setattr(models.config.model, "base_dir", str(base_dir))
-    monkeypatch.setattr(models.config.model, "small_backend", "torch")
-    monkeypatch.setattr(models.config.model.vlm, "engine", "vllm")
+    monkeypatch.setattr(models.get_config().model, "base_dir", str(base_dir))
+    monkeypatch.setattr(models.get_config().model, "small_backend", "torch")
+    monkeypatch.setattr(models.get_config().model.vlm, "engine", "vllm")
 
     # 仅准备当前后端所需仓库，其余仓库保持缺失。
     for repo in models.MODEL_REPOS:
@@ -1447,7 +1552,7 @@ def test_models_verify_filters_by_effective_backends(tmp_path: Path, monkeypatch
 def test_models_verify_with_onnx_backend(tmp_path: Path, monkeypatch: Any) -> None:
     """显式 ONNX 只校验 ONNX 与所选 VLM 权重。"""
     base_dir = tmp_path / "models"
-    monkeypatch.setattr(models.config.model, "base_dir", str(base_dir))
+    monkeypatch.setattr(models.get_config().model, "base_dir", str(base_dir))
 
     result = runner.invoke(app, ["models", "verify", "--small-backend", "onnx", "--vlm-engine", "llama-cpp"])
 
@@ -1459,7 +1564,7 @@ def test_models_verify_with_onnx_backend(tmp_path: Path, monkeypatch: Any) -> No
 def test_models_verify_repo_ignores_backend_options(tmp_path: Path, monkeypatch: Any) -> None:
     """传具体 repo 名时后端选项被忽略。"""
     base_dir = tmp_path / "models"
-    monkeypatch.setattr(models.config.model, "base_dir", str(base_dir))
+    monkeypatch.setattr(models.get_config().model, "base_dir", str(base_dir))
 
     # 聚合 ONNX 仓库必须具有每个必需文件，根目录标记不能替代文件检查。
     repo = next(r for r in models.MODEL_REPOS if r.name == "MinerU-4_models_onnx")
@@ -1481,3 +1586,34 @@ def test_models_verify_rejects_invalid_small_backend() -> None:
 
     assert result.exit_code == 1
     assert "Unsupported small backend 'invalid'" in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize(
+    "arguments, expected_calls",
+    [
+        (["--help"], 0),
+        (["hardware", "--help"], 0),
+        (["hardware", "info", "--help"], 0),
+        (["hardware", "detect", "--help"], 0),
+        (["models", "--help"], 0),
+        (["version"], 1),
+        (["hardware", "info"], 1),
+    ],
+)
+def test_kit_logging_only_initializes_for_execution(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str], expected_calls: int
+) -> None:
+    """控制台上下文的日志初始化只发生在叶子执行阶段，帮助和嵌入调用没有副作用。"""
+    from mineru.kit.commands import hardware
+    from mineru.utils import logger
+
+    calls: list[str] = []
+    monkeypatch.setattr(logger, "configure_global_log_level", lambda: calls.append("logging"))
+    monkeypatch.setattr(hardware, "_info_data", lambda **kwargs: None)
+    result = runner.invoke(app, arguments, obj=kit_main.KitContext(configure_logging=True))
+    assert result.exit_code == 0, result.output
+    assert len(calls) == expected_calls
+    calls.clear()
+    embedded = runner.invoke(app, arguments)
+    assert embedded.exit_code == 0
+    assert calls == []

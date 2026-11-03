@@ -18,6 +18,7 @@ import typing
 from pathlib import Path
 
 from ...model.registry import vlm_model_repo
+from ...model.runtime.llama_device import DEFAULT_GPU_THREADS, LlamaSelection, default_llama_threads, resolve_llama_device
 
 DEFAULT_PORT = "30000"
 DEFAULT_N_GPU_LAYERS = 99
@@ -57,6 +58,7 @@ MODEL_SOURCE_ENV = (
 PROJECTOR_SELECTOR_FLAGS = ("-mm", "--mmproj", "-mmu", "--mmproj-url")
 PROJECTOR_SOURCE_ENV = ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
 PARALLEL_FLAGS = ("-np", "--parallel")
+THREAD_FLAGS = ("-t", "--threads")
 # router 模式的模型来源（llama-server 未指定模型时按目录/预设自组路由）：
 # 视为用户已提供模型，注入默认 -m 会关掉 router 模式并强制下载官方模型。
 ROUTER_SOURCE_FLAGS = ("--models-dir", "--models-preset")
@@ -90,13 +92,39 @@ def _has_env(*names: str) -> bool:
 
 
 def _flag_value(args: list[str], *flags: str) -> str | None:
+    value = None
     for index, arg in enumerate(args):
         for flag in flags:
             if arg == flag and index + 1 < len(args):
-                return args[index + 1]
+                value = args[index + 1]
             if arg.startswith(f"{flag}="):
-                return arg.split("=", 1)[1]
-    return None
+                value = arg.split("=", 1)[1]
+    return value
+
+
+def _set_arg(args: list[str], value: str, *flags: str) -> None:
+    """替换所有旧别名，避免原生 parser 在读到后续覆盖值前校验旧设备名失败。"""
+    kept = []
+    index = 0
+    while index < len(args):
+        if args[index] in flags:
+            index += 2
+        elif any(args[index].startswith(f"{flag}=") for flag in flags):
+            index += 1
+        else:
+            kept.append(args[index])
+            index += 1
+    args[:] = [*kept, flags[0], value]
+
+
+def _projector_enabled(args: list[str]) -> bool | None:
+    """读取投影显式开关，保留未设置状态并遵循 CLI 最后一次出现的值。"""
+    offload = os.environ.get("LLAMA_ARG_MMPROJ_OFFLOAD")
+    enabled = offload.lower() in {"1", "true", "yes", "on"} if offload else None
+    for arg in args:
+        if arg in {"--mmproj-offload", "--no-mmproj-offload"}:
+            enabled = arg == "--mmproj-offload"
+    return enabled
 
 
 def _redact_secrets(args: list[str]) -> list[str]:
@@ -174,14 +202,85 @@ def _read_gguf_context_length(model_path: Path) -> int:
     return context_by_architecture.get(architecture, 0)
 
 
-def _exec_server(args: list[str]) -> typing.NoReturn:
+def _exec_server(args: list[str], selection: LlamaSelection | None = None) -> typing.NoReturn:
     """定位二进制并以进程替换方式转发参数。"""
     binary = llama_server_binary()
     if not binary.is_file():
         raise FileNotFoundError(f"llama-server binary not found: {binary}")
 
     print(f"start llama.cpp server: {binary} {' '.join(_redact_secrets(args))}")
-    os.execv(str(binary), [str(binary), *args])
+    changes = dict(selection.environment) if selection is not None else {}
+    previous = {name: os.environ.get(name) for name in changes}
+    try:
+        os.environ.update(changes)
+        os.execv(str(binary), [str(binary), *args])
+    finally:
+        # exec replaces this process on success; restore only after a failure/test stub.
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _device_policy(args: list[str]) -> LlamaSelection:
+    """读取原生路由参数后应用同一设备策略；模型默认参数尚未注入 GPU 层数。"""
+    layers = _flag_value(args, "-ngl", "--gpu-layers", "--n-gpu-layers") or os.environ.get("LLAMA_ARG_N_GPU_LAYERS")
+    try:
+        count = int(layers) if layers is not None else None
+    except ValueError:
+        count = -1  # Explicit all/auto: preserve native GPU-layer parsing and manual routing.
+    devices = _flag_value(args, "-dev", "--device") or os.environ.get("LLAMA_ARG_DEVICE")
+    names = tuple(devices.split(",")) if devices else None
+    offline = _has_arg(args, "--offline") or _has_env("LLAMA_ARG_OFFLINE")
+    options = {"allow_download": False} if offline else {}
+    projector = _flag_value(args, "-mmdev", "--mmproj-device") or os.environ.get("MTMD_BACKEND_DEVICE")
+    projector_enabled = _projector_enabled(args)
+    projector_gpu = projector != "none" and (
+        projector_enabled is True or (projector is not None and projector_enabled is not False)
+    )
+    if projector_gpu:
+        # 显式投影 GPU 可以与 CPU 主模型共存；设备名和组合合法性由原生 parser 处理。
+        return LlamaSelection(reason="explicit_projector")
+    return resolve_llama_device(n_gpu_layers=count, device_names=names, **options)
+
+
+def _apply_device_policy(args: list[str], selection: LlamaSelection) -> None:
+    """自动 CPU 完整关闭卸载；GPU 及显式设备名交给原生运行时。"""
+    if selection.device == "cpu":
+        _set_arg(args, "0", "--n-gpu-layers", "-ngl", "--gpu-layers")
+        _set_arg(args, "none", "--device", "-dev")
+        _set_arg(args, "none", "--mmproj-device", "-mmdev")
+        args.append("--no-op-offload")
+        if not _has_arg(args, "--mmproj-offload", "--no-mmproj-offload") and not _has_env("LLAMA_ARG_MMPROJ_OFFLOAD"):
+            args.append("--no-mmproj-offload")
+    elif selection.reason == "explicit_projector":
+        layers = _flag_value(args, "-ngl", "--gpu-layers", "--n-gpu-layers") or os.environ.get("LLAMA_ARG_N_GPU_LAYERS")
+        devices = _flag_value(args, "-dev", "--device") or os.environ.get("LLAMA_ARG_DEVICE")
+        try:
+            cpu_layers = int(layers) == 0 if layers is not None else False
+        except ValueError:
+            cpu_layers = False
+        if cpu_layers or devices == "none" or os.environ.get("MINERU_LLAMA_CPP_BACKEND") == "cpu":
+            _set_arg(args, "0", "--n-gpu-layers", "-ngl", "--gpu-layers")
+            args.append("--no-op-offload")
+        # 明确指定投影设备时，后续 ngl=0 默认值不能再关闭投影 GPU。
+        if not _has_arg(args, "--mmproj-offload", "--no-mmproj-offload") and not _has_env("LLAMA_ARG_MMPROJ_OFFLOAD"):
+            args.append("--mmproj-offload")
+
+
+def _apply_thread_policy(args: list[str], selection: LlamaSelection) -> None:
+    """仅补 GPU 主模型的生成线程数，批处理默认继承；用户 CLI/env 优先。"""
+    if _has_arg(args, *THREAD_FLAGS) or _has_env("LLAMA_ARG_THREADS"):
+        return
+    threads = default_llama_threads(selection)
+    if selection.reason == "explicit_projector":
+        # _apply_device_policy 已把 CPU 主模型的各种显式选择规范化为 ngl=0。
+        # CPU 主模型 + GPU 投影仍保留主模型的自动线程数。
+        if _flag_value(args, "--n-gpu-layers", "-ngl", "--gpu-layers") != "0":
+            threads = DEFAULT_GPU_THREADS
+    if threads is not None:
+        args.extend(["--threads", str(threads)])
 
 
 def main() -> None:
@@ -251,6 +350,9 @@ def main() -> None:
             args.extend(["--alias", repo.name])
 
     # ---- 对齐 EngineCore::EngineCore 写死的 common_params（用户 CLI 或环境变量设定时逐项让位）----
+    selection = _device_policy(args)
+    _apply_device_policy(args, selection)
+    _apply_thread_policy(args, selection)
     user_defined_parallel = _has_arg(args, *PARALLEL_FLAGS) or _has_env("LLAMA_ARG_N_PARALLEL")
     user_defined_ctx = _has_arg(args, "-c", "--ctx-size") or _has_env("LLAMA_ARG_CTX_SIZE")
     if not user_defined_parallel:
@@ -289,7 +391,7 @@ def main() -> None:
         if n_ctx_train > 0:
             args.extend(["--ctx-size", str(n_ctx_train * DEFAULT_N_PARALLEL)])
 
-    _exec_server(args)
+    _exec_server(args, selection)
 
 
 if __name__ == "__main__":

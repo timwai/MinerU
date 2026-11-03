@@ -4,7 +4,7 @@ import os
 
 import typer
 
-from ...config import config, get_config_file_exists, get_config_file_path, get_config_source
+from ...config import get_config, get_config_file_exists, get_config_file_path, get_config_source
 from ...model.download import (
     DOWNLOAD_MODEL_SOURCES,
     MODEL_SOURCE_ENV_VAR,
@@ -27,8 +27,9 @@ from ...utils.logger import configure_global_log_level
 from ...utils.stdio import configure_standard_streams
 from ..errors import exit_with_message
 from ..output import print_info, print_success
+from ._base import RuntimeCommand
 
-app = typer.Typer(help=t("Download, inspect, and verify local MinerU models."), no_args_is_help=True)
+app = typer.Typer(help=t("Download, inspect, and verify local MinerU models."), no_args_is_help=True, add_completion=False)
 
 
 def _validate_download_source(source: str | None) -> str | None:
@@ -82,7 +83,11 @@ def _format_repo_status(repo: ModelRepo) -> str:
     return f"{repo.name}: {status} ({repo.local_dir()})"
 
 
-@app.command("download", help=t("Download an explicit repo or the tier resources required by the current backend combination."))
+@app.command(
+    "download",
+    cls=RuntimeCommand,
+    help=t("Download an explicit repo or the tier resources required by the current backend combination."),
+)
 def download_cmd(
     repo: str | None = typer.Argument(None, help=t("Model repo: MinerU-4_models_torch, MinerU-4_models_onnx, or a VLM repo")),
     tier: str | None = typer.Option(None, "--tier", help=t("Model tier to prepare: basic or standard")),
@@ -115,7 +120,7 @@ def download_cmd(
     print_success(t("Downloaded models for {label}.", label=label))
 
 
-@app.command("show", help=t("Show configuration sources, effective backends, and tier resources."))
+@app.command("show", cls=RuntimeCommand, help=t("Show configuration sources, effective backends, and tier resources."))
 def show_cmd(
     small_backend: str | None = typer.Option(
         None,
@@ -132,7 +137,7 @@ def show_cmd(
     try:
         effective_small_backend = resolve_small_model_backend(small_backend)
         effective_vlm_engine = (
-            "http-client" if vlm_engine is None and config.model.vlm.server_url else resolve_vlm_engine(vlm_engine)
+            "http-client" if vlm_engine is None and get_config().model.vlm.server_url else resolve_vlm_engine(vlm_engine)
         )
     except ValueError as exc:
         exit_with_message("invalid_request", str(exc), "backend")
@@ -142,13 +147,15 @@ def show_cmd(
         t("Config: {path}", path=config_file),
         t("Config exists: {value}", value=str(get_config_file_exists()).lower()),
         f"MINERU_MODEL_SOURCE={os.getenv(MODEL_SOURCE_ENV_VAR, '') or '(unset)'}",
-        f"model.base_dir: {config.model.base_dir}",
+        f"model.base_dir: {get_config().model.base_dir}",
         f"model.base_dir.source: {get_config_source('model.base_dir')}",
-        f"model.source: {config.model.source}",
+        f"model.source: {get_config().model.source}",
         f"model.source.source: {get_config_source('model.source')}",
-        f"model.small_backend: {config.model.small_backend}",
+        f"model.small_backend: {get_config().model.small_backend}",
         f"model.small_backend.source: {get_config_source('model.small_backend')}",
-        f"model.vlm.engine: {config.model.vlm.engine}",
+        f"model.onnx_device: {get_config().model.onnx_device}",
+        f"model.onnx_device.source: {get_config_source('model.onnx_device')}",
+        f"model.vlm.engine: {get_config().model.vlm.engine}",
         f"model.vlm.engine.source: {get_config_source('model.vlm.engine')}",
         t("Effective small backend: {backend}", backend=effective_small_backend),
         t("Effective VLM engine: {engine}", engine=effective_vlm_engine),
@@ -167,7 +174,9 @@ def show_cmd(
         print_info(f"  {tier}: {names}")
 
 
-@app.command("verify", help=t("Verify local resources for an explicit repo or the current backend combination."))
+@app.command(
+    "verify", cls=RuntimeCommand, help=t("Verify local resources for an explicit repo or the current backend combination.")
+)
 def verify_cmd(
     repo: str | None = typer.Argument(None, help=t("Optional model repo name")),
     tier: str | None = typer.Option(None, "--tier", help=t("Optional model tier: basic or standard")),

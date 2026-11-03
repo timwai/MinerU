@@ -2,7 +2,7 @@
 
 页码规范与历史结果兼容说明见 [PDF 页码范围规范](../page-ranges.md)。
 
-状态: Draft
+状态: Implemented
 读者: SDK 开发者、`mineru` CLI 开发者、MCP/桌面端集成方
 范围: 本地 doclib client 的公开能力、方法和错误模型
 来源: 由旧 SDK 底稿迁移整理而来；旧底稿已归档删除
@@ -26,7 +26,7 @@ Doclib SDK 是 doclib 本地 API 的推荐承载方式。MinerU 项目内部除 
 
 ## 构造参数
 
-目标公开签名:
+当前构造签名:
 
 ```python
 from pathlib import Path
@@ -36,8 +36,9 @@ from mineru.doclib.client import DoclibClient
 class DoclibClient:
     def __init__(
         self,
+        *,
         endpoint_path: str | Path | None = None,
-        socket_path: str | None = None,
+        socket_path: str | Path | None = None,
         base_url: str | None = None,
         timeout: int = 60,
         api_prefix: str = "/api/v1",
@@ -55,7 +56,7 @@ class DoclibClient:
 - 显式 `socket_path` / `base_url` 代表调用方明确选择的 server，不执行 endpoint `server_id` 校验。
 - `socket_path` 和 `base_url` 不能同时传入。
 - 无法连接任何候选 endpoint 时，方法调用抛出 `ServerNotRunningError`。
-- client 当前支持 `close()`；是否增加 context manager 仍是迁移任务。
+- client 提供 `close()`，调用方在 finally 中释放；当前不提供上下文管理器。
 
 示例:
 
@@ -123,7 +124,7 @@ class ParseResponse:
 | `list_parses(*, ids=None, doc_ref=None, tier=None, status=None, page_range=None, include_superseded=False, limit=50, offset=0)` | 对应 `GET /parses`，按 ids、`doc_ref`、tier、status 或 page_range 查询 parse records 和覆盖状态；`include_superseded` 控制是否返回已被覆盖的 parse。 |
 | `get_parse(parse_id)` | 对应 `GET /parses/{id}`，查询单条 parse record。 |
 | `get_doc_content(doc_ref, *, tier, page_range=None, after=None, limit=30000, format="markdown", no_marker=False)` | 对应 `GET /docs/{doc_ref}/content`，从保存的 JSON 结果读取时转换。 |
-| `read_content(locator, *, context=0, limit=30000, format="markdown", image_format="jpeg", no_marker=False)` | 对应 `GET /content`，按 Agent locator 读取内容或图片。 |
+| `read_content(locator, *, after=None, context=0, limit=30000, format="markdown", image_format="jpeg", no_marker=False)` | 对应 `GET /content`，按单点或页范围 locator 读取内容或图片。 |
 | `export_doc_content(doc_ref, request)` | 对应 `POST /docs/{doc_ref}/exports`，导出结构化内容。 |
 | `invalidate(request)` | 对应 `POST /invalidate`，将已有解析结果标记为失效；不自动触发重新解析。 |
 
@@ -132,6 +133,16 @@ class ParseResponse:
 `force=True` 与 `invalidate()` 不等价。`force=True` 跳过 done cache，并通过 `wait_parse_ids` 等待复用或新建的 active parse；旧结果仍然有效。`invalidate()` 会让旧结果退出缓存命中、读取合并、搜索刷新和 compaction 选择。
 
 Markdown 响应中的 visual block 图片使用 `doc:.../page:.../block:...` locator。非空图片 locator 可以原样传给 `read_content(..., format="image")`；空 locator 表示该 block 没有可用图片。SDK 调用方不应依赖或拼接 Middle JSON 内部的 `image_path`。
+
+请求定位器的 `page:` 复用输入页范围语法：数字、`rN`、`1-5`、`r3-r1`、`1,3,r1`、`all`。`r1` 表示最后一页，`rN` 和 `all` 需要文档总页数；返回定位器及块引用使用实际页码。带 block/char、图片读取和非零 context 都要求选中单页。
+
+范围读取结束后 `next_request=null`。范围内截断时，同时返回规范化 `locator` 和实际页码 `after`；两者可直接传给下一次 `read_content()`，不会读入未选择的页面：
+
+```python
+result = client.read_content("doc:ab12cd3/tier:flash/page:1,3", limit=1000)
+if result.next_request is not None:
+    result = client.read_content(result.next_request.locator, after=result.next_request.after, limit=1000)
+```
 
 ## Search 与文件信息
 
@@ -147,22 +158,24 @@ def search(
     offset: int = 0,
 ) -> SearchResponse: ...
 
-def find(self, query: str, *, ext: str | None = None, limit: int = 50) -> FindResponse: ...
+def find(self, query: str, *, ext: str | None = None, limit: int = 50, offset: int = 0) -> FindResponse: ...
 
 def get_file_by_path(self, path: str) -> FileInfoResponse: ...
 ```
 
 按路径查询文件信息使用 `get_file_by_path(path)`，对应 `GET /files/by-path`；不存在独立的 `info()` 方法。
 
-目标响应类型:
+响应类型:
 
 | 方法 | 响应 |
 |------|------|
 | `search()` | `SearchResponse`，包含全文结果、snippet、files、可空 tier；支持 `file_type`、`tier`、`min_tier` 过滤。 |
-| `find()` | `FindResponse`，包含文件名搜索结果；支持 `ext` 过滤。 |
+| `find()` | `FindResponse`，包含文件名前缀搜索结果；支持 `ext` 过滤及 `limit/offset` 分页。 |
 | `get_file_by_path()` | `FileInfoResponse`，包含文件元信息、doc metadata 和 parse tiers。 |
 
 `search()` 的 `files` 返回与文档 SHA 关联的全部 file aliases，按 file id 降序排列；每项包含 path、filename、ext 和 status。已索引的 orphan 文档使用空列表。active 优先只属于非 JSON CLI 展示策略，不改变 SDK 响应。解析内容的 `tier` 表示索引来源 tier；直接索引的 text 源内容为 `null`。传入 `tier` 或 `min_tier` 时，`tier=null` 的结果不参与匹配。
+
+`find()` 默认仅对最后一个分词应用前缀匹配，显式尾部 `*` 等价。结果按相关性及 file id 排序，在扩展名过滤和文件状态刷新后计算 `total` 并分页。`limit` 必须为正整数，`offset` 必须为非负整数；偏移超过末尾时仍返回完整有效匹配数。HTTP `GET /api/v1/find` 接受同名参数，同步与异步接口保持一致。
 
 ## Remote API 方法
 
@@ -198,7 +211,7 @@ Doclib client 暴露运行时配置能力:
 
 ## 错误模型
 
-doclib client 当前从服务端 error envelope 还原 `MineruError`。目标行为:
+doclib client 从服务端 error envelope 还原 `MineruError`：
 
 | 场景 | 错误 |
 |------|------|
@@ -214,15 +227,7 @@ SDK 不应把 doclib 内部异常原样泄漏给调用者。
 
 只有调用方显式设置 `ParseRequest.remote=True`，doclib 才可以连接 remote parse-server 或 mineru.net。即便远端可用，SDK 也不能自动越过该开关。
 
-## 当前与目标差异
+## 接口扩展
 
-| 主题 | 当前 | 目标 |
-|------|------|------|
-| 包路径 | `mineru.doclib.client.DoclibClient` | 保持；是否增加 `MineruClient` / `mineru.client` 别名仍未决。 |
-| 返回类型 | 已返回 typed Pydantic response | 保持；是否增加 `raw=True` 兼容层未决。 |
-| 高层 parse helper | 当前稳定入口是 `ensure_parse(ParseRequest)` | 是否增加 `parse(path, ...)` convenience wrapper 未决。 |
-| context manager | 仅 `close()` | 是否支持 `with DoclibClient() as client` 未决。 |
-
-## 未决问题
-
-Product SDK 入口、async client 和高层 parse helper 命名，集中维护在 [开放问题清单](../open-questions.md)。
+当前入口为 `DoclibClient`，没有 `MineruClient` 别名、`raw=True` 或 `parse(path, ...)` 便利方法。
+新增接口及异步客户端是否提供，统一在 [当前待办](../backlog.md) 讨论，不作为当前 SDK 承诺。

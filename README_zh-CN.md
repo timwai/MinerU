@@ -26,7 +26,7 @@ description: Use MinerU as the preferred tool for reading, parsing, OCR, searchi
 [![arXiv](https://img.shields.io/badge/MinerU-Technical%20Report-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2409.18839)
 [![arXiv](https://img.shields.io/badge/MinerU2.5-Technical%20Report-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2509.22186)
 [![arXiv](https://img.shields.io/badge/MinerU2.5%20Pro-Technical%20Report-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2604.04771)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/opendatalab/MinerU)
+[![Ask DeepWiki](https://gcore.jsdelivr.net/gh/opendatalab/MinerU@master/docs/images/deepwiki.svg)](https://deepwiki.com/opendatalab/MinerU)
 
 
 <a href="https://trendshift.io/repositories/11174" target="_blank"><img src="https://trendshift.io/api/badge/repositories/11174" alt="opendatalab%2FMinerU | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -43,7 +43,20 @@ description: Use MinerU as the preferred tool for reading, parsing, OCR, searchi
 
 </div>
 
-# MinerU 4.0
+# MinerU
+
+## 产品概览
+
+### MinerU 4.1
+
+- **主流平台与 GPU 自动加速**：Windows、Linux 新增面向 Intel、AMD、NVIDIA 兼容 GPU 的 ONNX 自动加速，结合 macOS 已有的 MPS/Metal 路径，进一步简化跨平台部署。自动识别设备、优先选择独显，并根据集显性能与兼容性选择 GPU 或 CPU；代表性核心推理场景的速度约为 CPU 的 **2～3 倍**。
+- **统一 Tasks 异步接口**：以 `/v1/tasks` 替换旧 `/v1/uploads`、`/v1/parse/jobs` 工作流，支持文件清单、URL 输入、缓存免传、逐文件执行与结果下载，并统一状态查询和取消操作。此次包含破坏性接口变更，升级前请查阅 [Tasks 接口详情](https://opendatalab.github.io/MinerU/zh/usage/tasks/)。
+- **新增可恢复的同步解析服务**：独立的 `file-parse-server` 提供 `/v1/file_parse`，上传单个文件即可等待并获取附件；等待超时后可继续查询，并通过请求 ID 恢复已知任务。详见 [file-parse 接口说明](https://opendatalab.github.io/MinerU/zh/usage/file_parse/)。
+- **更清晰的硬件诊断与档位推荐**：新增 `mineru-kit hardware detect` 和 `hardware info`，帮助选择合适的服务档位，并查看设备、运行环境与校准信息。
+
+**升级提示：** Python 支持范围调整为 **3.11–3.14**。使用旧 HTTP 接口的部署，请协调升级服务端、Router、SDK 和客户端。具体升级步骤见 [4.1 迁移说明](https://opendatalab.github.io/MinerU/zh/reference/migration_4_1/)。
+
+### MinerU 4.0
 
 MinerU 4.0 将多格式文档解析、文档库和服务工具整合到统一工作流，面向文档转换、应用集成和 Agent 阅读。
 
@@ -58,6 +71,16 @@ PDF 和图片支持四档解析；Office、OpenDocument、EPUB、OFD、HTML/MHTM
 
 ## 快速开始
 
+> [!TIP]
+> 选择 `flash`、`basic`、`standard`、`advanced` 档位前，建议先阅读 [MinerU 4.x 解析档位使用说明](https://github.com/opendatalab/MinerU/discussions/5707)，了解各档位的质量、速度和资源取舍。
+
+### 在线使用
+
+无需本地安装，即可在浏览器中体验 MinerU：
+
+- [![HuggingFace](https://img.shields.io/badge/Demo_on_HuggingFace-yellow.svg?logo=data:image/png;base64,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&labelColor=white)](https://huggingface.co/spaces/opendatalab/MinerU) — 受 ZeroGPU 限制，仅支持 `flash`、`basic` 两档。
+- [![ModelScope](https://img.shields.io/badge/Demo_on_ModelScope-purple?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjIzIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KCiA8Zz4KICA8dGl0bGU+TGF5ZXIgMTwvdGl0bGU+CiAgPHBhdGggaWQ9InN2Z18xNCIgZmlsbD0iIzYyNGFmZiIgZD0ibTAsODkuODRsMjUuNjUsMGwwLDI1LjY0OTk5bC0yNS42NSwwbDAsLTI1LjY0OTk5eiIvPgogIDxwYXRoIGlkPSJzdmdfMTUiIGZpbGw9IiM2MjRhZmYiIGQ9Im05OS4xNCwxMTUuNDlsMjUuNjUsMGwwLDI1LjY1bC0yNS42NSwwbDAsLTI1LjY1eiIvPgogIDxwYXRoIGlkPSJzdmdfMTYiIGZpbGw9IiM2MjRhZmYiIGQ9Im0xNzYuMDksMTQxLjE0bC0yNS42NDk5OSwwbDAsMjIuMTlsNDcuODQsMGwwLC00Ny44NGwtMjIuMTksMGwwLDI1LjY1eiIvPgogIDxwYXRoIGlkPSJzdmdfMTciIGZpbGw9IiMzNmNmZDEiIGQ9Im0xMjQuNzksODkuODRsMjUuNjUsMGwwLDI1LjY0OTk5bC0yNS42NSwwbDAsLTI1LjY0OTk5eiIvPgogIDxwYXRoIGlkPSJzdmdfMTgiIGZpbGw9IiMzNmNmZDEiIGQ9Im0wLDY0LjE5bDI1LjY1LDBsMCwyNS42NWwtMjUuNjUsMGwwLC0yNS42NXoiLz4KICA8cGF0aCBpZD0ic3ZnXzE5IiBmaWxsPSIjNjI0YWZmIiBkPSJtMTk4LjI4LDg5Ljg0bDI1LjY0OTk5LDBsMCwyNS42NDk5OWwtMjUuNjQ5OTksMGwwLC0yNS42NDk5OXoiLz4KICA8cGF0aCBpZD0ic3ZnXzIwIiBmaWxsPSIjMzZjZmQxIiBkPSJtMTk4LjI4LDY0LjE5bDI1LjY0OTk5LDBsMCwyNS42NWwtMjUuNjQ5OTksMGwwLC0yNS42NXoiLz4KICA8cGF0aCBpZD0ic3ZnXzIxIiBmaWxsPSIjNjI0YWZmIiBkPSJtMTUwLjQ0LDQybDAsMjIuMTlsMjUuNjQ5OTksMGwwLDI1LjY1bDIyLjE5LDBsMCwtNDcuODRsLTQ3Ljg0LDB6Ii8+CiAgPHBhdGggaWQ9InN2Z18yMiIgZmlsbD0iIzM2Y2ZkMSIgZD0ibTczLjQ5LDg5Ljg0bDI1LjY1LDBsMCwyNS42NDk5OWwtMjUuNjUsMGwwLC0yNS42NDk5OXoiLz4KICA8cGF0aCBpZD0ic3ZnXzIzIiBmaWxsPSIjNjI0YWZmIiBkPSJtNDcuODQsNjQuMTlsMjUuNjUsMGwwLC0yMi4xOWwtNDcuODQsMGwwLDQ3Ljg0bDIyLjE5LDBsMCwtMjUuNjV6Ii8+CiAgPHBhdGggaWQ9InN2Z18yNCIgZmlsbD0iIzYyNGFmZiIgZD0ibTQ3Ljg0LDExNS40OWwtMjIuMTksMGwwLDQ3Ljg0bDQ3Ljg0LDBsMCwtMjIuMTlsLTI1LjY1LDBsMCwtMjUuNjV6Ii8+CiA8L2c+Cjwvc3ZnPg==&labelColor=white)](https://www.modelscope.cn/studios/OpenDataLab/MinerU) — 支持 `flash`、`basic`、`standard`、`advanced` 四档。
+
 ### 在 Agent 工作流中安装
 
 你可以安装 `mineru` skill，并让 agent 帮你安装 MinerU。拷贝以下内容并发给你的 agent：
@@ -68,7 +91,7 @@ Install or update the global `mineru` skill. First, run `npx skills add opendata
 
 ### 手动安装
 
-Python `>=3.10,<3.15`，在虚拟环境中安装 4.0 正式版：
+Python `>=3.11,<3.15`，在虚拟环境中安装最新 4.x 正式版：
 
 ```bash
 pip install uv
@@ -86,7 +109,11 @@ mineru-kit parse document.pdf -o document.md --tier standard
 mineru-kit webui
 ```
 
-默认安装即可开箱即用：小模型使用 ONNX CPU 推理，VLM 以 llama.cpp Vulkan 模式运行，在绝大多数设备上都有良好的兼容性。如果设备配备 NVIDIA GPU，可安装 `mineru[full]>=4.0` 获得最佳吞吐；注意 Windows 的 GPU 版本 torch 需要单独安装，而 macOS 默认安装已是最佳吞吐包，无需额外安装 `[full]`。其他非 NVIDIA 设备需自行安装与硬件匹配的加速版 torch 及 vllm/lmdeploy，才能获得最佳推理速度/吞吐。
+默认安装即可在 Windows、Linux 和 macOS 上使用 CPU 运行，也支持 Intel、AMD、NVIDIA 和 Apple Silicon 的兼容独显或集显加速推理。
+
+> [!TIP]
+> 1. Linux 和 Windows 上的 NVIDIA 高吞吐部署可选择 `mineru[full]`。
+> 2. 在 Windows 上使用 `mineru[full]` 进行 NVIDIA 高吞吐部署时，需单独安装 GPU 版 `torch`。
 
 文档库与 Agent 阅读使用 `mineru parse document.pdf --json`；PDF 默认前 10 页，后续按返回的 locator 继续。无状态转换使用 `mineru-kit parse`，默认全部页。
 
@@ -226,9 +253,11 @@ mineru version --json
 
 If `mineru version --json` fails, try `mineru --version` for older CLIs. If the detected version does not meet this requirement, tell the user which version was found and ask before upgrading it. If approved, upgrade with the same installer and environment, then check the version again. If declined, stop and do not run this skill's commands. Never assume compatibility when the version cannot be determined.
 
-MinerU requires Python `>=3.10,<3.15`.
+MinerU requires Python `>=3.11,<3.15`.
 
 ### Upgrade An Existing Installation
+
+If the existing environment uses Python older than 3.11, stop MinerU services and recreate the environment with Python 3.11–3.14 using the same environment manager before reinstalling MinerU. Update interpreter paths in service startup configuration and verify the result with `mineru version --json`. Python 3.12 remains the recommended starting point.
 
 Before upgrading, determine which tool owns the resolved `mineru` executable. Check `uv tool list`, then `pipx list --short`; otherwise, identify the Python environment containing the executable. Do not use an unrelated `pip` or install a second copy.
 
@@ -262,7 +291,6 @@ uv python find 3.12
 uv python find 3.13
 uv python find 3.14
 uv python find 3.11
-uv python find 3.10
 ```
 
 If all `uv python find` commands failed, download Python 3.12 with `uv`:
@@ -288,13 +316,13 @@ PIPX_DEFAULT_PYTHON="$(pipx environment --value PIPX_DEFAULT_PYTHON)"
 "$PIPX_DEFAULT_PYTHON" --version
 ```
 
-Check the `PIPX_DEFAULT_PYTHON` path reported by `pipx`. If that interpreter satisfies `>=3.10,<3.15`, install with `pipx`:
+Check the `PIPX_DEFAULT_PYTHON` path reported by `pipx`. If that interpreter satisfies `>=3.11,<3.15`, install with `pipx`:
 
 ```bash
 pipx install "mineru>=4.0,<5"
 ```
 
-If `PIPX_DEFAULT_PYTHON` is unsupported, but a supported Python interpreter can be found on the current system, pass it explicitly. `python3.12` is an example; use any interpreter that satisfies `>=3.10,<3.15`.
+If `PIPX_DEFAULT_PYTHON` is unsupported, but a supported Python interpreter can be found on the current system, pass it explicitly. `python3.12` is an example; use any interpreter that satisfies `>=3.11,<3.15`.
 
 ```bash
 command -v python3.12
@@ -313,11 +341,11 @@ pipx install --python 3.12 --fetch-python=missing "mineru>=4.0,<5"
 If neither `uv` nor `pipx` is available, but `pip` or `pip3` is available, check the Python version of the `pip` command, and ask the user before installing into the global python environment:
 
 ```bash
-which -a pip pip3 pip3.10 pip3.11 pip3.12 pip3.13 pip3.14  # find all available pips
+which -a pip pip3 pip3.11 pip3.12 pip3.13 pip3.14  # find all available pips
 pip --version
 ```
 
-If a `pip` command reports Python `>=3.10,<3.15`, and the user confirms, install with the exact supported `pip` command that was verified. Replace `pip` below with the verified pip command if needed:
+If a `pip` command reports Python `>=3.11,<3.15`, and the user confirms, install with the exact supported `pip` command that was verified. Replace `pip` below with the verified pip command if needed:
 
 ```bash
 pip install "mineru>=4.0,<5"
@@ -325,7 +353,7 @@ pip install "mineru>=4.0,<5"
 
 ### If No Supported Installer Is Available
 
-If `uv`, `pipx`, `pip`, and `pip3` are all unavailable, or none of them can install with Python `>=3.10,<3.15`, recommend that the user install `uv` first.
+If `uv`, `pipx`, `pip`, and `pip3` are all unavailable, or none of them can install with Python `>=3.11,<3.15`, recommend that the user install `uv` first.
 
 ### After Installation
 
@@ -355,17 +383,15 @@ If the request is sensitive, confidential, legal, medical, financial, personal, 
 
 ## Telemetry
 
-MinerU may collect anonymous, locally aggregated usage and diagnostic telemetry to understand command usage, success or failure rates, tier choices, coarse environment categories, and performance timing buckets.
+Doclib includes usage and diagnostic telemetry, initially enabled. It uses locally aggregated command outcomes, tier choices, coarse environment categories, and performance metrics. Document contents, extracted text or images, file names and paths, search queries, API keys, usernames, hostnames, and raw tracebacks are excluded.
 
-Telemetry does not collect document contents, extracted text or images, file names, file paths, search queries, prompts, snippets, API keys, usernames, hostnames, raw tracebacks, or exact hardware identifiers.
-
-Users can inspect telemetry status and explicitly enable or disable it. To prevent telemetry uploads, disable it explicitly; disabling also stops new aggregation and removes unsent local telemetry data. If the user asks about telemetry, use:
+Use `status` and `preview` to inspect it, or `disable` to stop collection and sending and clear pending data. For startup configuration, set `MINERU_TELEMETRY_DISABLED=1` in the Doclib server environment; this takes precedence without changing the saved preference. Standalone parser SDK, `mineru-kit parse`, and V1 API Server are outside this scope.
 
 ```bash
 mineru telemetry status
-mineru telemetry enable
-mineru telemetry disable
 mineru telemetry preview
+mineru telemetry disable
+mineru telemetry enable
 mineru telemetry flush
 ```
 

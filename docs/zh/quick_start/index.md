@@ -1,10 +1,10 @@
 # 快速入门
 
-本指南面向 MinerU **4.0 正式版**。AMD 和国产加速卡的既有适配保持在 `<4`，请使用[旧平台指南](../usage/compatibility.md)。
+本指南面向 MinerU **4.x**，包含 4.1 自动设备选择与 API 更新。已有部署请阅读 [4.1 迁移说明](../reference/migration_4_1.md)。国产卡的旧适配教程仍适用于 `<4`，见[旧平台指南](../usage/compatibility.md)。
 
 ## 安装 MinerU
 
-MinerU 包支持 Python `>=3.10,<3.15`。建议新建 Python 3.12 环境；vLLM、LMDeploy、Torch 等可选引擎还受各自 wheel、操作系统和驱动约束，包支持的 Python 范围不等于所有引擎均支持该范围。
+MinerU 包支持 Python `>=3.11,<3.15`。建议新建 Python 3.12 环境；vLLM、LMDeploy、Torch 等可选引擎还受各自 wheel、操作系统和驱动约束，包支持的 Python 范围不等于所有引擎均支持该范围。
 
 ```bash
 uv venv --python 3.12 .venv
@@ -22,7 +22,7 @@ Windows PowerShell 激活环境：
 .venv\Scripts\Activate.ps1
 ```
 
-安装基础包：
+安装最新已发布的 4.x 基础包：
 
 ```bash
 uv pip install -U "mineru>=4.0,<5"
@@ -31,6 +31,8 @@ uv pip install -U "mineru>=4.0,<5"
 也可在已激活的环境中使用 `python -m pip install -U "mineru>=4.0,<5"`。中国大陆可给安装命令添加 `-i https://mirrors.aliyun.com/pypi/simple`。
 
 基础包包含 WebUI、ONNX 小模型运行时和 llama.cpp VLM；Apple Silicon 上会自动安装 Torch 依赖。需要 Torch 小模型或高吞吐 VLM 时，按[扩展模块](extension_modules.md)安装 `torch` 或 `full`，不要使用 3.x 的 extras。
+
+4.1 在 Windows x64 使用 DirectML、Linux x86_64 使用 WebGPU，自动选择兼容 GPU 或 CPU；Apple Silicon 默认使用 Torch/MPS 与 llama.cpp/Metal。可用 `mineru-kit hardware detect` 推荐档位，或用 `hardware info --json` 读取诊断信息。首次 ONNX 校准可能下载识别模型，详见[档位与运行环境](../usage/tiers.md)。
 
 ## 第一次解析
 
@@ -67,6 +69,10 @@ mineru search "关键词" --json
 
 `mineru` 使用文档库和缓存。`mineru parse` 默认读取 PDF 前 10 页，可能按输出长度返回继续阅读请求；按返回的 locator 和 `next_request` 继续。它与直接输出完整文件的 `mineru-kit parse` 是不同工作流，详见[基础使用](../usage/quick_usage.md)。
 
+### 文档库遥测
+
+Doclib 提供使用与诊断遥测，初始设置为启用。可通过 `mineru telemetry status`、`preview` 查看，使用 `mineru telemetry disable` 停止采集和发送；也可在服务启动前设置 `MINERU_TELEMETRY_DISABLED=1`。遥测不包含文档内容、文件名和路径，范围与设置见[遥测说明](../../next/telemetry-minimum.md)。
+
 ## WebUI 与 API
 
 ```bash
@@ -79,11 +85,11 @@ mineru-kit webui --server-name 127.0.0.1 --server-port 7860
 mineru-kit api-server --host 127.0.0.1 --port 8000 --tier standard
 ```
 
-在 [OpenAPI 文档](http://127.0.0.1:8000/docs)查看当前服务接口。
+在 [OpenAPI 文档](http://127.0.0.1:8000/docs)查看当前服务接口。异步批次使用 [Tasks](../usage/tasks.md)；需要上传单文件并直接返回附件时，另行启动 [file-parse 服务](../usage/file_parse.md)。
 
 ## 源码安装
 
-在包含 4.0 源码的仓库根目录执行：
+在对应版本源码的仓库根目录执行：
 
 ```bash
 uv pip install -e .
@@ -97,4 +103,5 @@ mineru version --json
 - [档位与运行环境](../usage/tiers.md)
 - [模型下载与配置](../usage/model_source.md)
 - [3.x → 4.0 迁移](../reference/migration_4.md)
-- [官网](https://mineru.net/)与[在线演示](../demo/index.md)
+- [4.0.x → 4.1 迁移](../reference/migration_4_1.md)
+- [官网](https://mineru.net/)与[在线演示](https://www.modelscope.cn/studios/OpenDataLab/MinerU)
